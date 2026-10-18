@@ -89,7 +89,8 @@ type (
 	// a steady gap apart set its tempo, which it then plays.
 	Tap struct{ Module string }
 	// SetTempo has Tempo Module play BPM, where Manual says, or follow
-	// the clock wired into it.
+	// the clock wired into it. Taken over with no BPM, it plays on at
+	// the tempo it followed.
 	SetTempo struct {
 		Module string
 		BPM    float64
@@ -330,8 +331,12 @@ func (a *App) Handle(win int, in gunim.Intent) {
 		m.BPM, m.Manual = clampBPM(bpm), true
 	case SetTempo:
 		if m := s.Module(in.Module); m != nil {
-			if in.BPM > 0 {
+			switch c, ok := a.eng.Played(in.Module); {
+			case in.BPM > 0:
 				m.BPM = clampBPM(in.BPM)
+			case in.Manual && !m.Manual && ok:
+				// Taken over: it plays on at the tempo it followed.
+				m.BPM = clampBPM(c.BPM)
 			}
 			m.Manual = in.Manual
 		}

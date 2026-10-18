@@ -214,6 +214,27 @@ func TestATempoPlaysItsOwnUntilTold(t *testing.T) {
 	}
 }
 
+// TestATempoFollowsThroughABreak: the music stops, the Beat counts on
+// unsure, and the Tempo after it goes on counting with it rather than
+// jumping to a tempo of its own.
+func TestATempoFollowsThroughABreak(t *testing.T) {
+	r := newRig(t)
+	r.s.Module(r.tempo).BPM = 90
+	r.e.Set(r.s)
+	r.play(clicks(120, 8))
+	live := r.play(make([]float32, 2*8*rate))
+	if live.Clocks[r.beat].Sure {
+		t.Fatal("eight seconds into a break the Beat is still sure")
+	}
+	c := live.Clocks[r.tempo]
+	if math.Abs(c.BPM-120) > 1 || c != live.Clocks[r.beat] {
+		t.Errorf("eight seconds into a break the Tempo counts %+v, the Beat %+v", c, live.Clocks[r.beat])
+	}
+	if p, ok := r.e.Played(r.tempo); !ok || p != c {
+		t.Errorf("the Tempo is said to have played %+v", p)
+	}
+}
+
 // TestATempoHeldManualIgnoresItsClock: a Tempo set to its own tempo
 // plays that, whatever comes in.
 func TestATempoHeldManualIgnoresItsClock(t *testing.T) {

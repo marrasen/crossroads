@@ -123,6 +123,8 @@ func (a *ear) hear() (heard Sound, says string) {
 type tempo struct {
 	beats float64
 	taps  []time.Time
+	// played is what it counted last tick.
+	played Count
 }
 
 // The Tempo module's measures: the tempo it plays with none set, the
@@ -180,9 +182,10 @@ func (e *Engine) sound(m *show.Module, dt float64, live *Live) {
 			e.tempos[m.ID] = t
 		}
 		c, ok := e.input(m.ID, "in").(Count)
-		if ok && c.Sure && !m.Manual {
-			// Following: and where the user takes over, the beat goes
-			// on from here.
+		if ok && c.BPM > 0 && !m.Manual {
+			// Following, through a break too, where the clock in counts
+			// on unsure: and where the user takes over, the beat goes on
+			// from here.
 			t.beats = c.Beats
 		} else {
 			bpm := m.BPM
@@ -192,6 +195,7 @@ func (e *Engine) sound(m *show.Module, dt float64, live *Live) {
 			t.beats += dt * bpm / 60
 			c = Count{BPM: bpm, Beats: t.beats, Sure: true}
 		}
+		t.played = c
 		e.values[key] = c
 		live.Clocks[m.ID] = c
 	case show.Level:
@@ -236,6 +240,17 @@ func Flash(beats, every float64) float64 {
 		f++
 	}
 	return (1 - f) * (1 - f)
+}
+
+// Played is what Tempo module counted last tick, and false for none.
+func (e *Engine) Played(module string) (Count, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	t := e.tempos[module]
+	if t == nil || t.played.BPM <= 0 {
+		return Count{}, false
+	}
+	return t.played, true
 }
 
 // Tap taps Tempo module's beat now: the beat falls on it, and two taps
