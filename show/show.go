@@ -88,11 +88,26 @@ const (
 	Player Kind = "player"
 	// Button is a button on screen, which fires a trigger.
 	Button Kind = "button"
+	// Controller is a MIDI controller: a value for each knob and fader,
+	// a trigger for each button, and its lights lit from what is sent
+	// back.
+	Controller Kind = "controller"
+	// MIDIOut sends MIDI: a note for a trigger, a controller's move for
+	// a value.
+	MIDIOut Kind = "midiout"
+	// Map scales a value from one range to another, and may turn it
+	// over.
+	Map Kind = "map"
+	// Every fires a trigger every so many beats of a clock.
+	Every Kind = "every"
+	// Toggle turns a value on and off, a trigger at a time.
+	Toggle Kind = "toggle"
 )
 
 // Kinds are the kinds of module, in the order the Routes tab offers
 // them.
-var Kinds = []Kind{Fader, Lights, Mixer, DMXOut, StageView, AudioIn, Beat, Tempo, Level, Pulse, Player, Button}
+var Kinds = []Kind{Fader, Lights, Mixer, DMXOut, StageView, AudioIn, Beat, Tempo, Level, Pulse, Player, Button,
+	Controller, MIDIOut, Map, Every, Toggle}
 
 // Title is what a module of kind k is called.
 func (k Kind) Title() string {
@@ -121,6 +136,16 @@ func (k Kind) Title() string {
 		return "Player"
 	case Button:
 		return "Button"
+	case Controller:
+		return "Controller"
+	case MIDIOut:
+		return "MIDI out"
+	case Map:
+		return "Map"
+	case Every:
+		return "Every"
+	case Toggle:
+		return "Toggle"
 	}
 	return string(k)
 }
@@ -147,8 +172,59 @@ type Module struct {
 	// no clock is wired into it.
 	BPM    float64 `json:"bpm,omitempty"`
 	Manual bool    `json:"manual,omitempty"`
-	// Every is how many beats a Pulse flashes every, 1 where it is 0.
+	// Every is how many beats a Pulse flashes, or an Every fires,
+	// every, 1 where it is 0.
 	Every float64 `json:"every,omitempty"`
+	// Device is the MIDI port a Controller listens to and lights, or a
+	// MIDI out sends to, by its name.
+	Device string `json:"device,omitempty"`
+	// Layout is a Controller's built-in layout, by its ID, and Controls
+	// the controls it learned, where it has none.
+	Layout   string    `json:"layout,omitempty"`
+	Controls []Control `json:"controls,omitempty"`
+	// Map is how a Map maps: from From to To, each a range, low then
+	// high; the value is turned over where Invert says.
+	From   [2]float64 `json:"from,omitzero"`
+	To     [2]float64 `json:"to,omitzero"`
+	Invert bool       `json:"invert,omitempty"`
+	// Channel is the MIDI channel a MIDI out sends on, 0 to 15, and
+	// Note and CC the note it plays for a trigger and the controller it
+	// moves for a value.
+	Channel int `json:"channel,omitempty"`
+	Note    int `json:"note,omitempty"`
+	CC      int `json:"cc,omitempty"`
+}
+
+// A ControlKind is what a controller's control is.
+type ControlKind string
+
+// The kinds of control.
+const (
+	// Knob is an endless knob, sending how far it turned: its value
+	// never jumps, whatever it was.
+	Knob ControlKind = "knob"
+	// Slider is a fader or a knob with ends, sending where it stands.
+	// It takes over a value only once it has passed it, so the value
+	// does not jump.
+	Slider ControlKind = "slider"
+	// Press is a button, firing as it is pressed.
+	Press ControlKind = "press"
+)
+
+// A Control is one control of a MIDI controller: its name, what kind it
+// is, and the MIDI it sends, a controller number or a note on Channel,
+// 0 to 15. Lit says the controller lights it from what is sent back to
+// it: a knob's ring, a button's light.
+type Control struct {
+	ID      string      `json:"id"`
+	Name    string      `json:"name"`
+	Kind    ControlKind `json:"kind"`
+	Channel int         `json:"channel"`
+	// CC is the controller number a knob or slider sends, and Note the
+	// note a button sends; -1 for none.
+	CC   int  `json:"cc"`
+	Note int  `json:"note"`
+	Lit  bool `json:"lit,omitempty"`
 }
 
 // An Output is a DMX box a DMX out sends to.
@@ -314,6 +390,7 @@ func (s *Show) Clone() Show {
 	c.Modules = slices.Clone(s.Modules)
 	for i := range c.Modules {
 		c.Modules[i].Lights = slices.Clone(c.Modules[i].Lights)
+		c.Modules[i].Controls = slices.Clone(c.Modules[i].Controls)
 	}
 	c.Wires = slices.Clone(s.Wires)
 	c.Songs = slices.Clone(s.Songs)

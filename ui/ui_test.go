@@ -167,7 +167,7 @@ func TestTheBeatModulesShowTheirBeat(t *testing.T) {
 		t.Fatal(err)
 	}
 	live := engine.Live{Values: map[string]float64{pl: 0.5}, Clocks: map[string]engine.Count{bt: {BPM: 124, Beats: 3.2, Sure: true}},
-		Ears: map[string]string{in: "Microphone"}}
+		Says: map[string]string{in: "Microphone"}}
 	if err := c.Patch(app.LiveTopic, live); err != nil {
 		t.Fatal(err)
 	}
@@ -292,5 +292,76 @@ func TestThePlayerTabListsTheSongsAndPlaysOneDoubleClicked(t *testing.T) {
 	}
 	if seek < 149*time.Second || seek > 151*time.Second {
 		t.Errorf("a click three quarters along the bar moves the song to %v, want 150 s", seek)
+	}
+}
+
+// TestTheControllersTabShowsEachControllerAndLearns: a card for a
+// Controller and a MIDI out, the ports offered, the controls' values,
+// and the learn button asking to learn.
+func TestTheControllersTabShowsEachControllerAndLearns(t *testing.T) {
+	was := listMIDI
+	listMIDI = func(outputs bool) []string {
+		if outputs {
+			return []string{"Synth"}
+		}
+		return []string{"X-TOUCH MINI", "nanoKONTROL"}
+	}
+	defer func() { listMIDI = was }()
+	s := show.Start()
+	ctl, out := s.NewID("m"), s.NewID("m")
+	s.Modules = append(s.Modules,
+		show.Module{ID: ctl, Kind: show.Controller, Name: "Desk", Device: "nanoKONTROL",
+			Controls: []show.Control{{ID: "c1", Name: "Control 7", Kind: show.Slider, CC: 7, Note: -1}}},
+		show.Module{ID: out, Kind: show.MIDIOut, Name: "To the synth", Device: "Gone", Channel: 3, Note: 60, CC: 1})
+	s.Layout.Show(show.TabMIDI)
+	w := gunimtest.New(t, geom.Sz(1280, 800), nil)
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: s}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	live := engine.Live{Desks: map[string]engine.Desk{ctl: {Says: "nanoKONTROL", Values: map[string]float64{"c1": 0.5}}}}
+	if err := c.Patch(app.LiveTopic, live); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		w.Frame(time.Second / 60)
+	}
+	f := frameOf(t, w)
+	tab, ok := f.tabs[show.TabMIDI].(*controllers)
+	if !ok {
+		t.Fatal("no Controllers tab")
+	}
+	desk, synth := tab.list.cards[ctl], tab.list.cards[out]
+	if desk == nil || synth == nil {
+		t.Fatal("a card is missing")
+	}
+	if len(desk.devices) != 2 || desk.device.Selected() != 1 {
+		t.Errorf("the controller offers %v, chosen %d", desk.devices, desk.device.Selected())
+	}
+	if len(synth.devices) != 2 || synth.devices[1] != "Gone" || synth.channel.Value() != 4 {
+		t.Errorf("the MIDI out offers %v on channel %v", synth.devices, synth.channel.Value())
+	}
+	if desk.learn.Disabled || desk.forget["c1"] == nil {
+		t.Fatal("a controller of learned controls cannot learn, or forget")
+	}
+	ui := frameUI(t, w)
+	b, ok := ui.Bounds(desk.learn)
+	if !ok {
+		t.Fatal("the learn button is not drawn")
+	}
+	w.Input(input.PointerMove{Pos: b.Center()})
+	w.Input(input.PointerDown{Pos: b.Center(), Button: input.ButtonPrimary, Clicks: 1})
+	w.Input(input.PointerUp{Pos: b.Center(), Button: input.ButtonPrimary})
+	w.Frame(time.Second / 60)
+	var learn bool
+	for len(c.Intents()) > 0 {
+		if l, ok := (<-c.Intents()).Intent.(app.Learn); ok && l.Module == ctl && l.On {
+			learn = true
+		}
+	}
+	if !learn {
+		t.Error("the learn button asked to learn nothing")
 	}
 }

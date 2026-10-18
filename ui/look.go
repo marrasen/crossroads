@@ -21,6 +21,7 @@ var (
 	clockInk = theme.Color("crossroads.signal.clock", color.NRGBA{R: 0xff, G: 0x6a, B: 0xb0, A: 0xff})
 	trigInk  = theme.Color("crossroads.signal.trigger", color.NRGBA{R: 0xff, G: 0xe0, B: 0x66, A: 0xff})
 	songInk  = theme.Color("crossroads.kind.player", color.NRGBA{R: 0x9b, G: 0xe8, B: 0xff, A: 0xff})
+	midiInk  = theme.Color("crossroads.kind.midi", color.NRGBA{R: 0xb4, G: 0xa7, B: 0xff, A: 0xff})
 )
 
 // signalInk is signal s's colour.
@@ -52,8 +53,12 @@ func kindInk(th *theme.Live, k show.Kind) color.NRGBA {
 		return clockInk.Get(th)
 	case show.Player:
 		return songInk.Get(th)
-	case show.Button:
+	case show.Button, show.Every, show.Toggle:
 		return trigInk.Get(th)
+	case show.Controller, show.MIDIOut:
+		return midiInk.Get(th)
+	case show.Map:
+		return valueInk.Get(th)
 	case show.Lights:
 		return lightInk.Get(th)
 	case show.Mixer:

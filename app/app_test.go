@@ -267,3 +267,26 @@ func TestASongsTempoAndGainAreKeptWithinBounds(t *testing.T) {
 		t.Errorf("set back to its scan, the song's tempo is %v", g.BPM)
 	}
 }
+
+// TestAControlLearnedJoinsItsController with an ID of its own, and is
+// forgotten as asked.
+func TestAControlLearnedJoinsItsController(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	a.Handle(0, AddModule{Kind: show.Controller})
+	id := named(t, a, "Controller").ID
+	a.Handle(0, SetLayout{Module: id, Layout: ""})
+	a.Handle(0, SetDevice{Module: id, Device: "nanoKONTROL"})
+	a.st.Show.Module(id).Controls = []show.Control{{ID: "c1"}}
+	a.eng.Set(a.st.Show)
+	a.eng.Learn(id, true)
+	learnt := []engine.Learnt{{Module: id, Control: show.Control{ID: "c1", Name: "Note 36", Kind: show.Press, CC: -1, Note: 36}}}
+	a.learntFrom(learnt)
+	m := named(t, a, "Controller")
+	if m.Device != "nanoKONTROL" || m.Layout != "" || len(m.Controls) != 2 || m.Controls[1].ID == "c1" {
+		t.Fatalf("the controller is %+v", m)
+	}
+	a.Handle(0, RemoveControl{Module: id, Control: "c1"})
+	if m := named(t, a, "Controller"); len(m.Controls) != 1 || m.Controls[0].Name != "Note 36" {
+		t.Errorf("having forgotten c1, the controls are %+v", m.Controls)
+	}
+}

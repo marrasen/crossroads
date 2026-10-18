@@ -24,6 +24,8 @@ a mixer, a DMX out and the stage view, all wired up:
 - **Faders** is a fader for each fader module, and the grand master.
 - **Rig** is the lights, their types and their addresses.
 - **Player** is the playlist and the transport.
+- **Controllers** is each MIDI controller and MIDI out: its port, its
+  controls as they move, and learning new ones.
 
 Lights can follow the music. **Audio in** listens to a sound card
 input. **Beat** finds the beat in it, and keeps counting through a
@@ -37,6 +39,15 @@ beats and loudness, and plays brought to −14 LUFS, with a gain of its
 own on top. The **Player** module sends out the song's sound, a clock
 from its beats, and triggers as each song starts and ends and on each
 bar; triggers in, as from a **Button**, play, stop, skip and go back.
+
+A **Controller** module is a MIDI controller. A Behringer X-Touch Mini
+is built in: set its knobs to relative in the X-Touch editor, and its
+rings and button lights follow what crossroads plays. Any other
+controller learns its controls: press Learn a control on the
+**Controllers** tab, then move one. A fader takes over its value only
+once it passes it. **Map** scales a value, **Every** fires every so
+many beats, **Toggle** turns on and off, and **MIDI out** sends notes
+and controller moves.
 
 Tabs drag into any arrangement, and out into windows of their own.
 Ctrl+S saves the show, Ctrl+O opens one. See

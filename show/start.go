@@ -13,10 +13,11 @@ const (
 	TabFaders = "faders"
 	TabRig    = "rig"
 	TabPlayer = "player"
+	TabMIDI   = "controllers"
 )
 
 // Tabs are the tabs, in the order a new window holds them.
-var Tabs = []string{TabRoutes, TabStage, TabFaders, TabRig, TabPlayer}
+var Tabs = []string{TabRoutes, TabStage, TabFaders, TabRig, TabPlayer, TabMIDI}
 
 // TabTitle is what tab t's tab says.
 func TabTitle(t string) string {
@@ -31,6 +32,8 @@ func TabTitle(t string) string {
 		return "Rig"
 	case TabPlayer:
 		return "Player"
+	case TabMIDI:
+		return "Controllers"
 	}
 	return t
 }
@@ -72,7 +75,7 @@ func Start() Show {
 		Wire{ID: s.NewID("w"), From: End{mixer.ID, "out"}, To: End{out.ID, "in"}},
 		Wire{ID: s.NewID("w"), From: End{mixer.ID, "out"}, To: End{view.ID, "in"}},
 	)
-	s.Layout = dock.NewLayout(true, TabRoutes, TabRig, TabStage, TabFaders, TabPlayer)
+	s.Layout = dock.NewLayout(true, TabRoutes, TabRig, TabMIDI, TabStage, TabFaders, TabPlayer)
 	s.Layout.Move(TabStage, dock.Target{Side: dock.Right})
 	s.Layout.Move(TabFaders, dock.Target{At: TabStage, Side: dock.Bottom})
 	s.Layout.Move(TabPlayer, dock.Target{At: TabFaders, Index: -1})

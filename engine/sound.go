@@ -158,7 +158,7 @@ func (e *Engine) sound(m *show.Module, dt float64, live *Live) {
 		}
 		snd, says := a.hear()
 		e.values[key] = snd
-		live.Ears[m.ID] = says
+		live.Says[m.ID] = says
 	case show.Beat:
 		snd, ok := e.input(m.ID, "in").(Sound)
 		f := e.follow[m.ID]
@@ -219,7 +219,8 @@ func (e *Engine) sound(m *show.Module, dt float64, live *Live) {
 		}
 		e.values[key] = v
 		live.Values[m.ID] = v
-	case show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView, show.Player, show.Button:
+	case show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView, show.Player, show.Button,
+		show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle:
 	}
 }
 

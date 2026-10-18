@@ -133,7 +133,7 @@ func (r *rig) play(sound []float32) Live {
 func TestTheBeatOfSoundComesThroughToAPulse(t *testing.T) {
 	r := newRig(t)
 	live := r.play(clicks(120, 10))
-	if says := live.Ears[r.in]; says != "Fake input" {
+	if says := live.Says[r.in]; says != "Fake input" {
 		t.Errorf("the Audio in says %q", says)
 	}
 	c := live.Clocks[r.beat]
@@ -260,7 +260,7 @@ func TestAnAudioInThatFailsSaysWhy(t *testing.T) {
 	defer e.Close()
 	e.Set(s)
 	<-done
-	if says := e.Tick().Ears[id]; says != "no such input" {
+	if says := e.Tick().Says[id]; says != "no such input" {
 		t.Errorf("the Audio in says %q", says)
 	}
 }

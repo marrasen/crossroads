@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/marrasen/crossroads/controller"
 	"github.com/marrasen/crossroads/engine"
 	"github.com/marrasen/crossroads/player"
 	"github.com/marrasen/crossroads/show"
@@ -141,6 +142,33 @@ type (
 	SeekSong struct{ At time.Duration }
 	// Press presses Button Module.
 	Press struct{ Module string }
+	// SetDevice has Controller or MIDI out Module use the MIDI port
+	// named Device.
+	SetDevice struct{ Module, Device string }
+	// SetLayout gives Controller Module the built-in layout Layout, or,
+	// with "", the controls it learns.
+	SetLayout struct{ Module, Layout string }
+	// Learn has Controller Module learn the next control moved, or
+	// stop.
+	Learn struct {
+		Module string
+		On     bool
+	}
+	// RemoveControl has Controller Module forget learned control
+	// Control.
+	RemoveControl struct{ Module, Control string }
+	// SetMap sets how Map Module maps.
+	SetMap struct {
+		Module   string
+		From, To [2]float64
+		Invert   bool
+	}
+	// SetMIDI sets the channel, note and controller MIDI out Module
+	// sends.
+	SetMIDI struct {
+		Module            string
+		Channel, Note, CC int
+	}
 	// Save saves the show, asking where for one never saved.
 	Save struct{}
 	// Open asks for a show file and opens it.
@@ -257,6 +285,7 @@ func (a *App) Run(ctx context.Context) error {
 		case <-a.changed:
 		case <-tick.C:
 			live := a.eng.Tick()
+			a.learnt()
 			n++
 			if n%2 == 0 {
 				for _, w := range a.wins {
@@ -363,7 +392,14 @@ func (a *App) Handle(win int, in gunim.Intent) {
 			m.BPM = 120
 		case show.Pulse:
 			m.Every = 1
-		case show.Fader, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Level, show.Player, show.Button:
+		case show.Every:
+			m.Every = 4
+		case show.Controller:
+			m.Layout = controller.XTouchMiniID
+		case show.Map:
+			m.From, m.To = [2]float64{0, 1}, [2]float64{0, 1}
+		case show.Fader, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Level, show.Player, show.Button,
+			show.MIDIOut, show.Toggle:
 		}
 		s.Modules = append(s.Modules, m)
 	case AddLight:
@@ -479,6 +515,29 @@ func (a *App) Handle(win int, in gunim.Intent) {
 	case Press:
 		a.eng.Press(in.Module)
 		return
+	case SetDevice:
+		if m := s.Module(in.Module); m != nil {
+			m.Device = in.Device
+		}
+	case SetLayout:
+		if m := s.Module(in.Module); m != nil {
+			m.Layout = in.Layout
+		}
+	case Learn:
+		a.eng.Learn(in.Module, in.On)
+		return
+	case RemoveControl:
+		if m := s.Module(in.Module); m != nil {
+			m.Controls = slices.DeleteFunc(m.Controls, func(c show.Control) bool { return c.ID == in.Control })
+		}
+	case SetMap:
+		if m := s.Module(in.Module); m != nil {
+			m.From, m.To, m.Invert = in.From, in.To, in.Invert
+		}
+	case SetMIDI:
+		if m := s.Module(in.Module); m != nil {
+			m.Channel, m.Note, m.CC = min(max(in.Channel, 0), 15), min(max(in.Note, 0), 127), min(max(in.CC, 0), 127)
+		}
 	case Save:
 		a.save(win)
 		return
@@ -504,6 +563,30 @@ const (
 // beat a minute.
 func clampBPM(bpm float64) float64 {
 	return math.Round(min(max(bpm, MinBPM), MaxBPM)*10) / 10
+}
+
+// learnt adds the controls the controllers learned to them.
+func (a *App) learnt() { a.learntFrom(a.eng.Learnt()) }
+
+// learntFrom adds the controls got to their controllers.
+func (a *App) learntFrom(got []engine.Learnt) {
+	if len(got) == 0 {
+		return
+	}
+	s := a.st.Show.Clone()
+	for _, l := range got {
+		m := s.Module(l.Module)
+		if m == nil {
+			continue
+		}
+		c := l.Control
+		// An ID none of its controls has.
+		for n := len(m.Controls) + 1; slices.ContainsFunc(m.Controls, func(o show.Control) bool { return o.ID == c.ID }); n++ {
+			c.ID = "c" + strconv.Itoa(n)
+		}
+		m.Controls = append(m.Controls, c)
+	}
+	a.setShow(s)
 }
 
 // MaxGain is the most decibels a song's own gain moves it by, up or
