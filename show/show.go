@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -102,12 +103,21 @@ const (
 	Every Kind = "every"
 	// Toggle turns a value on and off, a trigger at a time.
 	Toggle Kind = "toggle"
+	// Look is a look its lights hold: a level for each thing they do,
+	// all brought up and down by one level.
+	Look Kind = "look"
+	// Chaser steps through the light wired into it, on a clock's beats
+	// or a trigger, fading from step to step.
+	Chaser Kind = "chaser"
+	// Cues is a cue list: the light wired into it, one cue at a time,
+	// each faded to as GO is pressed.
+	Cues Kind = "cues"
 )
 
 // Kinds are the kinds of module, in the order the Routes tab offers
 // them.
 var Kinds = []Kind{Fader, Lights, Mixer, DMXOut, StageView, AudioIn, Beat, Tempo, Level, Pulse, Player, Button,
-	Controller, MIDIOut, Map, Every, Toggle}
+	Controller, MIDIOut, Map, Every, Toggle, Look, Chaser, Cues}
 
 // Title is what a module of kind k is called.
 func (k Kind) Title() string {
@@ -146,6 +156,12 @@ func (k Kind) Title() string {
 		return "Every"
 	case Toggle:
 		return "Toggle"
+	case Look:
+		return "Look"
+	case Chaser:
+		return "Chaser"
+	case Cues:
+		return "Cue list"
 	}
 	return string(k)
 }
@@ -160,8 +176,8 @@ type Module struct {
 	// Value is a fader's value, and a mixer's grand master, from 0 to
 	// 1.
 	Value float64 `json:"value,omitempty"`
-	// Lights are the lights a Lights module plays, by their IDs, in
-	// order.
+	// Lights are the lights a Lights module or a Look plays, by their
+	// IDs, in order.
 	Lights []string `json:"lights,omitempty"`
 	// Out is where a DMX out sends.
 	Out Output `json:"out,omitzero"`
@@ -193,6 +209,12 @@ type Module struct {
 	Channel int `json:"channel,omitempty"`
 	Note    int `json:"note,omitempty"`
 	CC      int `json:"cc,omitempty"`
+	// Levels are a Look's level for each thing its lights do, by role,
+	// 0 to 1.
+	Levels map[string]float64 `json:"levels,omitempty"`
+	// Fade is how much of each step a Chaser fades, 0 to 1, and how
+	// many seconds a Cue list takes to fade to a cue.
+	Fade float64 `json:"fade,omitempty"`
 }
 
 // A ControlKind is what a controller's control is.
@@ -391,6 +413,7 @@ func (s *Show) Clone() Show {
 	for i := range c.Modules {
 		c.Modules[i].Lights = slices.Clone(c.Modules[i].Lights)
 		c.Modules[i].Controls = slices.Clone(c.Modules[i].Controls)
+		c.Modules[i].Levels = maps.Clone(c.Modules[i].Levels)
 	}
 	c.Wires = slices.Clone(s.Wires)
 	c.Songs = slices.Clone(s.Songs)

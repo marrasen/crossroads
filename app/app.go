@@ -163,6 +163,30 @@ type (
 		From, To [2]float64
 		Invert   bool
 	}
+	// SetLevel sets the level Look Module holds Role at, 0 to 1; a
+	// level below 0 lets go of the role.
+	SetLevel struct {
+		Module, Role string
+		Level        float64
+	}
+	// SetFade sets how a Chaser or a Cue list Module fades.
+	SetFade struct {
+		Module string
+		Fade   float64
+	}
+	// Override holds Mixer Module's override Which, or lets it go.
+	Override struct {
+		Module, Which string
+		On            bool
+	}
+	// Flip flips Toggle Module.
+	Flip struct{ Module string }
+	// Step moves Chaser or Cue list Module on a step, or back with By
+	// -1.
+	Step struct {
+		Module string
+		By     int
+	}
 	// SetMIDI sets the channel, note and controller MIDI out Module
 	// sends.
 	SetMIDI struct {
@@ -398,6 +422,16 @@ func (a *App) Handle(win int, in gunim.Intent) {
 			m.Layout = controller.XTouchMiniID
 		case show.Map:
 			m.From, m.To = [2]float64{0, 1}, [2]float64{0, 1}
+		case show.Look:
+			// A warm white, on every light, ready to bring up.
+			for _, p := range s.Rig.Lights {
+				m.Lights = append(m.Lights, p.ID)
+			}
+			m.Levels = map[string]float64{"dimmer": 1, "white": 1, "red": 1, "green": 0.55, "blue": 0.2, "amber": 0.6}
+		case show.Chaser:
+			m.Every, m.Fade = 1, 0.5
+		case show.Cues:
+			m.Fade = 2
 		case show.Fader, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Level, show.Player, show.Button,
 			show.MIDIOut, show.Toggle:
 		}
@@ -534,6 +568,34 @@ func (a *App) Handle(win int, in gunim.Intent) {
 		if m := s.Module(in.Module); m != nil {
 			m.From, m.To, m.Invert = in.From, in.To, in.Invert
 		}
+	case SetLevel:
+		if m := s.Module(in.Module); m != nil {
+			m.Levels = maps.Clone(m.Levels)
+			if m.Levels == nil {
+				m.Levels = map[string]float64{}
+			}
+			if in.Level < 0 {
+				delete(m.Levels, in.Role)
+			} else {
+				m.Levels[in.Role] = min(in.Level, 1)
+			}
+		}
+	case SetFade:
+		if m := s.Module(in.Module); m != nil {
+			m.Fade = max(in.Fade, 0)
+			if m.Kind == show.Chaser {
+				m.Fade = min(m.Fade, 1)
+			}
+		}
+	case Override:
+		a.eng.Override(in.Module, in.Which, in.On)
+		return
+	case Flip:
+		a.eng.Flip(in.Module)
+		return
+	case Step:
+		a.eng.Step(in.Module, in.By)
+		return
 	case SetMIDI:
 		if m := s.Module(in.Module); m != nil {
 			m.Channel, m.Note, m.CC = min(max(in.Channel, 0), 15), min(max(in.Note, 0), 127), min(max(in.CC, 0), 127)

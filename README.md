@@ -26,6 +26,11 @@ a mixer, a DMX out and the stage view, all wired up:
 - **Player** is the playlist and the transport.
 - **Controllers** is each MIDI controller and MIDI out: its port, its
   controls as they move, and learning new ones.
+- **Live** is the page to play the show from: each grand master,
+  blackout, flash and hold, a pad for each look, GO and Back for each
+  cue list, and the buttons and toggles.
+- **Monitor** says why a light does what it does: each channel's value
+  and the module it comes from, and a log of MIDI, beats and songs.
 
 Lights can follow the music. **Audio in** listens to a sound card
 input. **Beat** finds the beat in it, and keeps counting through a
@@ -48,6 +53,12 @@ controller learns its controls: press Learn a control on the
 once it passes it. **Map** scales a value, **Every** fires every so
 many beats, **Toggle** turns on and off, and **MIDI out** sends notes
 and controller moves.
+
+A **Look** holds a level for each thing its lights do, brought up and
+down by one level. A **Chaser** steps through the looks wired into it
+on the beat; a **Cue list** fades to the next as GO is pressed. Each
+mixer can black out, flash every light full white for a drop, and
+hold what plays.
 
 Tabs drag into any arrangement, and out into windows of their own.
 Ctrl+S saves the show, Ctrl+O opens one. See
