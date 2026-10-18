@@ -7,6 +7,7 @@ package app
 import (
 	"context"
 	"log"
+	"maps"
 	"math"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/marrasen/crossroads/engine"
+	"github.com/marrasen/crossroads/player"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
 	"github.com/marrasen/gunim-dmx/dmx"
@@ -37,6 +39,9 @@ type State struct {
 	Show    show.Show
 	Path    string
 	Unsaved bool
+	// Songs say, by song, what is wrong with one: "Scanning…" while it
+	// is scanned, or why it could not be read.
+	Songs map[string]string
 }
 
 // Title is the windows' title.
@@ -103,6 +108,39 @@ type (
 		Module string
 		Every  float64
 	}
+	// AddSongs asks for songs and adds them to the playlist.
+	AddSongs struct{}
+	// AddSongPaths adds the songs at Paths to the playlist, in order,
+	// before the song Before, at the end where it is "".
+	AddSongPaths struct {
+		Paths  []string
+		Before string
+	}
+	// RemoveSong takes Song out of the playlist.
+	RemoveSong struct{ Song string }
+	// MoveSong moves Song to play before the song Before, last where it
+	// is "".
+	MoveSong struct{ Song, Before string }
+	// SetSongBPM sets the tempo Song plays its lights at, or with 0 has
+	// it play at the tempo its scan found.
+	SetSongBPM struct {
+		Song string
+		BPM  float64
+	}
+	// SetSongGain sets how many decibels louder Song plays than the
+	// target loudness brings it to.
+	SetSongGain struct {
+		Song string
+		Gain float64
+	}
+	// Transport has the playlist do Command.
+	Transport struct{ Command engine.Command }
+	// PlaySong plays Song from its start.
+	PlaySong struct{ Song string }
+	// SeekSong moves the song playing to At.
+	SeekSong struct{ At time.Duration }
+	// Press presses Button Module.
+	Press struct{ Module string }
 	// Save saves the show, asking where for one never saved.
 	Save struct{}
 	// Open asks for a show file and opens it.
@@ -127,7 +165,16 @@ type App struct {
 	// moving are the values of the faders held, not kept in the show
 	// yet, which the engine goes on playing as the show changes.
 	moving map[string]float64
+	// Scan scans a song; [player.Scan] where it is nil. scanning are
+	// the songs being scanned, by path, and lanes holds a place for
+	// each scan running, so only a few run at once.
+	Scan     func(path string) (show.Scan, error)
+	scanning map[string]string
+	lanes    chan struct{}
 }
+
+// scanLanes is how many songs are scanned at once.
+const scanLanes = 2
 
 // win is one of the application's windows.
 type win struct {
@@ -136,11 +183,20 @@ type win struct {
 }
 
 // savePath and openPath are the files the dialogs chose, coming back
-// to the application's goroutine.
+// to the application's goroutine, and songPaths the songs.
 type (
-	savePath string
-	openPath string
+	savePath  string
+	openPath  string
+	songPaths []string
 )
+
+// scanned is what a scan of song found in the file at path, coming
+// back to the application's goroutine.
+type scanned struct {
+	song, path string
+	scan       show.Scan
+	err        error
+}
 
 // fromWin is an intent from window id, or word that it closed.
 type fromWin struct {
@@ -157,8 +213,8 @@ func NewApp(s show.Show, path string, open Opener) *App {
 		s.Layout = show.Start().Layout
 	}
 	prune(&s)
-	a := &App{st: State{Show: s, Path: path}, open: open, wins: map[int]*win{}, moving: map[string]float64{},
-		in: make(chan any, 64), changed: make(chan struct{}, 1)}
+	a := &App{st: State{Show: s, Path: path, Songs: map[string]string{}}, open: open, wins: map[int]*win{}, moving: map[string]float64{},
+		in: make(chan any, 64), changed: make(chan struct{}, 1), scanning: map[string]string{}, lanes: make(chan struct{}, scanLanes)}
 	a.eng = engine.New(func() {
 		select {
 		case a.changed <- struct{}{}:
@@ -169,6 +225,12 @@ func NewApp(s show.Show, path string, open Opener) *App {
 	return a
 }
 
+// UseDeck has the playlist play through d, which the application
+// closes as it ends. Call it before Run.
+func (a *App) UseDeck(d engine.Deck) {
+	a.eng.Deck = d
+}
+
 // State returns the application's state.
 func (a *App) State() State { return a.st }
 
@@ -176,6 +238,7 @@ func (a *App) State() State { return a.st }
 // or ctx ends, playing the show forty times a second.
 func (a *App) Run(ctx context.Context) error {
 	defer a.eng.Close()
+	a.scanSongs()
 	for _, w := range a.st.Show.Layout.Windows {
 		if err := a.openWindow(w.ID, nil, geom.Pt(80, 80), geom.Sz(1280, 800), w.Place); err != nil {
 			if w.ID == 0 {
@@ -207,6 +270,12 @@ func (a *App) Run(ctx context.Context) error {
 				continue
 			case openPath:
 				a.openFrom(string(m))
+				continue
+			case songPaths:
+				a.Handle(0, AddSongPaths{Paths: m})
+				continue
+			case scanned:
+				a.scanned(m)
 				continue
 			}
 			fw, ok := m.(fromWin)
@@ -294,7 +363,7 @@ func (a *App) Handle(win int, in gunim.Intent) {
 			m.BPM = 120
 		case show.Pulse:
 			m.Every = 1
-		case show.Fader, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Level:
+		case show.Fader, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Level, show.Player, show.Button:
 		}
 		s.Modules = append(s.Modules, m)
 	case AddLight:
@@ -355,6 +424,61 @@ func (a *App) Handle(win int, in gunim.Intent) {
 	case dock.Change:
 		a.dockChange(in)
 		return
+	case AddSongs:
+		a.chooseSongs(win)
+		return
+	case AddSongPaths:
+		at := len(s.Songs)
+		if i := slices.IndexFunc(s.Songs, func(g show.Song) bool { return g.ID == in.Before }); i >= 0 {
+			at = i
+		}
+		var add []show.Song
+		for _, p := range in.Paths {
+			if player.Plays(p) {
+				add = append(add, show.Song{ID: s.NewID("song"), Path: p, Title: player.TitleOf(p)})
+			}
+		}
+		if len(add) == 0 {
+			return
+		}
+		s.Songs = slices.Insert(s.Songs, at, add...)
+	case RemoveSong:
+		s.Songs = slices.DeleteFunc(s.Songs, func(g show.Song) bool { return g.ID == in.Song })
+	case MoveSong:
+		i := slices.IndexFunc(s.Songs, func(g show.Song) bool { return g.ID == in.Song })
+		if i < 0 || in.Song == in.Before {
+			return
+		}
+		g := s.Songs[i]
+		s.Songs = slices.Delete(s.Songs, i, i+1)
+		at := len(s.Songs)
+		if j := slices.IndexFunc(s.Songs, func(g show.Song) bool { return g.ID == in.Before }); j >= 0 {
+			at = j
+		}
+		s.Songs = slices.Insert(s.Songs, at, g)
+	case SetSongBPM:
+		if g := s.Song(in.Song); g != nil {
+			g.BPM = 0
+			if in.BPM > 0 {
+				g.BPM = clampBPM(in.BPM)
+			}
+		}
+	case SetSongGain:
+		if g := s.Song(in.Song); g != nil {
+			g.Gain = math.Round(min(max(in.Gain, -MaxGain), MaxGain)*10) / 10
+		}
+	case Transport:
+		a.eng.Transport(in.Command)
+		return
+	case PlaySong:
+		a.eng.PlaySong(in.Song)
+		return
+	case SeekSong:
+		a.eng.SeekTo(in.At)
+		return
+	case Press:
+		a.eng.Press(in.Module)
+		return
 	case Save:
 		a.save(win)
 		return
@@ -382,8 +506,12 @@ func clampBPM(bpm float64) float64 {
 	return math.Round(min(max(bpm, MinBPM), MaxBPM)*10) / 10
 }
 
+// MaxGain is the most decibels a song's own gain moves it by, up or
+// down.
+const MaxGain = 12.0
+
 // setShow makes s the show: the engine plays it, it is marked unsaved,
-// and the windows show it.
+// and the windows show it. Songs not scanned yet are scanned.
 func (a *App) setShow(s show.Show) {
 	prune(&s)
 	a.st.Show, a.st.Unsaved = s, true
@@ -392,7 +520,85 @@ func (a *App) setShow(s show.Show) {
 		// A fader held plays on where it is held.
 		a.eng.SetValue(id, v)
 	}
+	a.scanSongs()
 	a.publish()
+}
+
+// scanSongs scans each song of the show not scanned, nor being
+// scanned, nor that failed, a few at a time, each on a goroutine of
+// its own.
+func (a *App) scanSongs() {
+	scan := a.Scan
+	if scan == nil {
+		scan = player.Scan
+	}
+	var songs map[string]string
+	for _, g := range a.st.Show.Songs {
+		if g.Scan != nil || a.st.Songs[g.ID] != "" || a.scanning[g.ID] == g.Path {
+			continue
+		}
+		if songs == nil {
+			// The windows hold the map the state had: a new one, not it
+			// changed.
+			songs = maps.Clone(a.st.Songs)
+			a.st.Songs = songs
+		}
+		a.scanning[g.ID] = g.Path
+		songs[g.ID] = Scanning
+		go func(id, path string) {
+			a.lanes <- struct{}{}
+			sc, err := scan(path)
+			<-a.lanes
+			a.in <- scanned{song: id, path: path, scan: sc, err: err}
+		}(g.ID, g.Path)
+	}
+}
+
+// Scanning is what State.Songs says of a song being scanned.
+const Scanning = "Scanning…"
+
+// scanned keeps what a scan found, where the song is still the one it
+// scanned.
+func (a *App) scanned(m scanned) {
+	if a.scanning[m.song] == m.path {
+		delete(a.scanning, m.song)
+	}
+	g := a.st.Show.Song(m.song)
+	if g == nil || g.Path != m.path {
+		return
+	}
+	songs := maps.Clone(a.st.Songs)
+	delete(songs, m.song)
+	if m.err != nil {
+		songs[m.song] = m.err.Error()
+		a.st.Songs = songs
+		a.publish()
+		return
+	}
+	a.st.Songs = songs
+	s := a.st.Show.Clone()
+	sc := m.scan
+	s.Song(m.song).Scan = &sc
+	a.setShow(s)
+}
+
+// chooseSongs asks in window win for songs to add.
+func (a *App) chooseSongs(win int) {
+	w := a.wins[win]
+	if w == nil {
+		return
+	}
+	patterns := make([]string, len(player.Kinds))
+	for i, k := range player.Kinds {
+		patterns[i] = "*" + k
+	}
+	go func() {
+		paths, err := w.c.ChooseFiles(context.Background(), driver.ChooseOptions{Title: "Add songs", Multiple: true,
+			Filters: []driver.FileFilter{{Name: "Songs", Patterns: patterns}}})
+		if err == nil && len(paths) > 0 {
+			a.in <- songPaths(paths)
+		}
+	}()
 }
 
 // prune takes out the wires of s into or out of ports that are gone,
@@ -414,8 +620,10 @@ func (a *App) replace(s show.Show, path string) {
 	}
 	prune(&s)
 	clear(a.moving)
-	a.st = State{Show: s, Path: path}
+	a.st = State{Show: s, Path: path, Songs: map[string]string{}}
+	clear(a.scanning)
 	a.eng.Set(s)
+	a.scanSongs()
 	a.syncWindows()
 	a.publish()
 }

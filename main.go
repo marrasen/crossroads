@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/marrasen/crossroads/app"
+	"github.com/marrasen/crossroads/player"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/crossroads/ui"
 	"github.com/marrasen/gunim"
@@ -65,6 +66,7 @@ func run(path, shot string, after time.Duration) error {
 			return c, w, nil
 		}
 		ap := app.NewApp(s, path, open)
+		ap.UseDeck(player.NewDeck())
 		if shot != "" {
 			go func() {
 				select {

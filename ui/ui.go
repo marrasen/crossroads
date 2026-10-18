@@ -1,5 +1,5 @@
 // Package ui is crossroads' windows' half: each window is a dock of
-// tabs, Routes, Stage, Faders and Rig, that the user drags into the
+// tabs, Routes, Stage, Faders, Rig and Player, that the user drags into the
 // arrangement they want, across as many windows as they like. The
 // application's half is package app.
 package ui
@@ -89,6 +89,8 @@ func tabIcon(t string) *icon.Icon {
 		return icon.SlidersVertical
 	case show.TabRig:
 		return icon.Cable
+	case show.TabPlayer:
+		return icon.Music
 	}
 	return icon.SquareTerminal
 }
@@ -105,6 +107,8 @@ func (f *frame) content(t string) gunim.Node {
 		n = newFaders()
 	case show.TabRig:
 		n = newRig()
+	case show.TabPlayer:
+		n = newPlaylist()
 	default:
 		return nil
 	}

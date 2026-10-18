@@ -6,6 +6,7 @@ package engine
 
 import (
 	"errors"
+	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,9 @@ const (
 	Audio Signal = "audio"
 	// Clock is a beat counted, as a [Count].
 	Clock Signal = "clock"
+	// Trigger is a moment, as a button pressed or a song starting: true
+	// for the tick it fires in.
+	Trigger Signal = "trigger"
 )
 
 // A Port is one of a module's inputs or outputs.
@@ -84,6 +88,11 @@ func Ports(s *show.Show, m *show.Module) (ins, outs []Port) {
 		return []Port{{"in", "Audio", Audio}}, []Port{{"out", "Value", Value}}
 	case show.Pulse:
 		return []Port{{"in", "Clock", Clock}}, []Port{{"out", "Value", Value}}
+	case show.Player:
+		return []Port{{"play", "Play or pause", Trigger}, {"stop", "Stop", Trigger}, {"next", "Next song", Trigger}, {"back", "Song before", Trigger}},
+			[]Port{{"audio", "Audio", Audio}, {"clock", "Clock", Clock}, {"start", "Song starts", Trigger}, {"end", "Song ends", Trigger}, {"bar", "Each bar", Trigger}}
+	case show.Button:
+		return nil, []Port{{"out", "Pressed", Trigger}}
 	}
 	return nil, nil
 }
@@ -163,6 +172,8 @@ type Live struct {
 	// Ears are what each Audio in listens to, or why it does not, by
 	// module.
 	Ears map[string]string
+	// Playing is what the playlist is doing.
+	Playing Playing
 }
 
 // An Engine runs a show's modules.
@@ -187,12 +198,28 @@ type Engine struct {
 	levels map[string]float64
 	// last is when the last tick ran.
 	last time.Time
+	// The playlist: the song chosen, what the deck was doing at the
+	// last tick, and why it would not play; the gain it plays at, the
+	// bar it is in, the events this tick, and the sound it played.
+	song    string
+	state   DeckState
+	deckErr string
+	gain    float64
+	bar     int64
+	ev      events
+	played  []float32
+	rate    int
+	// pressed are the Buttons pressed since the last tick.
+	pressed map[string]bool
 
 	// Listen opens an Audio in's input, [Listen] where it is nil, and
 	// now tells the time, [time.Now] where it is nil. Tests set them
 	// before the first Set.
 	Listen func(input string) (Listener, error)
 	Now    func() time.Time
+	// Deck plays the playlist; with none, nothing plays. Set it before
+	// the first Set; Close closes it.
+	Deck Deck
 }
 
 func (e *Engine) now() time.Time {
@@ -225,7 +252,7 @@ type portKey struct {
 func New(changed func()) *Engine {
 	return &Engine{layers: map[string]*mix.Layer{}, mixers: map[string]*mix.Mixer{}, heard: map[string][]*mix.Layer{}, outs: map[string]*out{},
 		values: map[portKey]any{}, changed: changed, ears: map[string]*ear{}, follow: map[string]*follower{},
-		tempos: map[string]*tempo{}, levels: map[string]float64{}}
+		tempos: map[string]*tempo{}, levels: map[string]float64{}, pressed: map[string]bool{}, bar: math.MinInt64}
 }
 
 // Set runs show s from now on: its modules in its wires' order, with a
@@ -285,7 +312,7 @@ func (e *Engine) Set(s show.Show) {
 			}
 			a.open(listen, e.changed)
 			e.ears[m.ID] = a
-		case show.Fader, show.StageView, show.Beat, show.Tempo, show.Level, show.Pulse:
+		case show.Fader, show.StageView, show.Beat, show.Tempo, show.Level, show.Pulse, show.Player, show.Button:
 		}
 	}
 	for id := range e.layers {
@@ -310,6 +337,13 @@ func (e *Engine) Set(s show.Show) {
 			a.close()
 			delete(e.ears, id)
 		}
+	}
+	if e.song != "" && e.s.Song(e.song) == nil {
+		// The song chosen is out of the playlist: it stops.
+		if e.Deck != nil {
+			e.Deck.Stop()
+		}
+		e.song, e.state, e.deckErr = "", DeckState{}, ""
 	}
 	for id := range e.follow {
 		if !keep[id] {
@@ -436,6 +470,11 @@ func (e *Engine) Tick() Live {
 		dt = min(max(now.Sub(e.last).Seconds(), 0), 0.25)
 	}
 	e.last = now
+	e.playlist()
+	defer func() {
+		e.ev = events{}
+		clear(e.pressed)
+	}()
 	for _, id := range e.order {
 		m := e.s.Module(id)
 		if m == nil {
@@ -485,8 +524,17 @@ func (e *Engine) Tick() Live {
 			}
 		case show.AudioIn, show.Beat, show.Tempo, show.Level, show.Pulse:
 			e.sound(m, dt, &live)
+		case show.Player:
+			e.player(m, &live)
+		case show.Button:
+			fired := e.pressed[id]
+			e.values[portKey{id, "out"}] = fired
+			if fired {
+				live.Values[id] = 1
+			}
 		}
 	}
+	live.Playing = Playing{Song: e.song, Pos: e.state.Pos, Len: e.state.Len, Playing: e.state.Playing, Err: e.deckErr}
 	return live
 }
 
@@ -527,5 +575,9 @@ func (e *Engine) Close() {
 	for id, a := range e.ears {
 		a.close()
 		delete(e.ears, id)
+	}
+	if e.Deck != nil {
+		_ = e.Deck.Close()
+		e.Deck = nil
 	}
 }
