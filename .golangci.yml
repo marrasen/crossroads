@@ -111,7 +111,6 @@ formatters:
   enable:
     - gofmt
     - goimports
-  exclusions:
 
 issues:
   max-issues-per-linter: 0
