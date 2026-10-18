@@ -16,10 +16,11 @@ const (
 	TabMIDI   = "controllers"
 	TabLive   = "live"
 	TabWatch  = "monitor"
+	TabDraw   = "patterns"
 )
 
 // Tabs are the tabs, in the order a new window holds them.
-var Tabs = []string{TabRoutes, TabStage, TabFaders, TabRig, TabPlayer, TabMIDI, TabLive, TabWatch}
+var Tabs = []string{TabRoutes, TabStage, TabFaders, TabRig, TabPlayer, TabMIDI, TabLive, TabWatch, TabDraw}
 
 // TabTitle is what tab t's tab says.
 func TabTitle(t string) string {
@@ -40,6 +41,8 @@ func TabTitle(t string) string {
 		return "Live"
 	case TabWatch:
 		return "Monitor"
+	case TabDraw:
+		return "Patterns"
 	}
 	return t
 }
@@ -89,7 +92,7 @@ func Start() Show {
 // Controllers and Monitor on the left, the Stage over the Faders,
 // Player and Live on the right, Routes and Faders in front.
 func DefaultLayout() dock.Layout {
-	l := dock.NewLayout(true, TabRoutes, TabRig, TabMIDI, TabWatch, TabStage, TabFaders, TabPlayer, TabLive)
+	l := dock.NewLayout(true, TabRoutes, TabRig, TabMIDI, TabDraw, TabWatch, TabStage, TabFaders, TabPlayer, TabLive)
 	l.Move(TabStage, dock.Target{Side: dock.Right})
 	l.Move(TabFaders, dock.Target{At: TabStage, Side: dock.Bottom})
 	l.Move(TabPlayer, dock.Target{At: TabFaders, Index: -1})

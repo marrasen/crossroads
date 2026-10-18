@@ -6,6 +6,7 @@ import (
 
 	"github.com/marrasen/crossroads/app"
 	"github.com/marrasen/crossroads/engine"
+	"github.com/marrasen/crossroads/pattern"
 	"github.com/marrasen/crossroads/routing"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
@@ -14,6 +15,7 @@ import (
 	"github.com/marrasen/gunim/gunimtest"
 	"github.com/marrasen/gunim/icon"
 	"github.com/marrasen/gunim/input"
+	"github.com/marrasen/gunim/widget"
 )
 
 // TestAWindowShowsTheShowAndItsFadersPlay: the four tabs build, the
@@ -480,4 +482,98 @@ func TestARoutesCardListsItsRoutesAndTurnsThemOff(t *testing.T) {
 	if !off {
 		t.Error("the on box asked nothing")
 	}
+}
+
+// TestThePatternEditorDrawsAClipAndTriesThePattern: a drag along an
+// empty lane draws a clip a beat and a half long, which goes into the
+// show; Try plays the pattern while held.
+func TestThePatternEditorDrawsAClipAndTriesThePattern(t *testing.T) {
+	s := show.Start()
+	light := s.Rig.Lights[0].ID
+	s.Patterns = []pattern.Pattern{{ID: "p", Name: "Chase", Bars: 1, Lanes: []pattern.Lane{{ID: "l", FixtureID: light}}}}
+	s.Layout.Show(show.TabDraw)
+	w := gunimtest.New(t, geom.Sz(1600, 900), nil)
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: s}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		w.Frame(time.Second / 60)
+	}
+	tab, ok := frameOf(t, w).tabs[show.TabDraw].(*patternsTab)
+	if !ok || tab.body == nil || tab.body.p.ID != "p" {
+		t.Fatal("the Patterns tab does not edit the pattern")
+	}
+	ui := frameUI(t, w)
+	r, ok := ui.Bounds(tab.body.timeline)
+	if !ok {
+		t.Fatal("the grid is not drawn")
+	}
+	bw := r.Size().W / 4
+	y := r.Min.Y + laneH/2
+	from, to := geom.Pt(r.Min.X+bw*0.1, y), geom.Pt(r.Min.X+bw*1.5, y)
+	w.Input(input.PointerMove{Pos: from})
+	w.Input(input.PointerDown{Pos: from, Button: input.ButtonPrimary, Clicks: 1})
+	w.Input(input.PointerMove{Pos: to})
+	w.Input(input.PointerUp{Pos: to, Button: input.ButtonPrimary})
+	w.Frame(time.Second / 60)
+	var saved *pattern.Pattern
+	for len(c.Intents()) > 0 {
+		if sp, ok := (<-c.Intents()).Intent.(app.SavePattern); ok {
+			saved = &sp.Pattern
+		}
+	}
+	if saved == nil || len(saved.Lanes[0].Clips) != 1 {
+		t.Fatalf("the drawing saved %+v", saved)
+	}
+	if cl := saved.Lanes[0].Clips[0]; cl.Start != 0 || cl.Length != 1.5 || cl.Kind != pattern.KindColour {
+		t.Errorf("the clip drawn is %+v, want a colour from 0 lasting 1.5 beats", cl)
+	}
+	try := findButton(tab.body.root, "Try")
+	if try == nil {
+		t.Fatal("no Try button")
+	}
+	b, _ := ui.Bounds(try)
+	w.Input(input.PointerMove{Pos: b.Center()})
+	w.Input(input.PointerDown{Pos: b.Center(), Button: input.ButtonPrimary, Clicks: 1})
+	w.Frame(time.Second / 60)
+	w.Input(input.PointerUp{Pos: b.Center(), Button: input.ButtonPrimary})
+	w.Frame(time.Second / 60)
+	var on, off bool
+	for len(c.Intents()) > 0 {
+		if tp, ok := (<-c.Intents()).Intent.(app.TestPattern); ok {
+			if tp.On {
+				on = true
+			} else {
+				off = on
+			}
+		}
+	}
+	if !on || !off {
+		t.Errorf("Try held and let go tried %v and stopped %v", on, off)
+	}
+}
+
+// findButton finds the button labelled label among n and what it holds.
+func findButton(n gunim.Node, label string) *widget.Button {
+	switch b := n.(type) {
+	case *holdButton:
+		if b.Label == label {
+			return b.Button
+		}
+	case *widget.Button:
+		if b.Label == label {
+			return b
+		}
+	}
+	if c, ok := n.(gunim.Composite); ok {
+		for _, k := range c.Children() {
+			if b := findButton(k, label); b != nil {
+				return b
+			}
+		}
+	}
+	return nil
 }
