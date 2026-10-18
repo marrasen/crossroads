@@ -258,6 +258,7 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 		}
 		d.ch = ch
 		d.last = ev.String()
+		e.note(now, m.Name+": "+d.last)
 		c := find(controls, built, kind, ch, number)
 		if c == nil {
 			if d.learn && value > 0 {
@@ -465,6 +466,9 @@ func (e *Engine) logic(m *show.Module, live *Live) {
 			fired = c.Sure && (seen && n != last || !seen && c.Beats-float64(n)*every < barJust)
 			e.everys[m.ID] = n
 		}
+		if fired {
+			e.note(e.last, m.Name+" fired")
+		}
 		e.values[key] = fired
 		if fired {
 			live.Values[m.ID] = 1
@@ -482,8 +486,15 @@ func (e *Engine) logic(m *show.Module, live *Live) {
 		e.values[key] = v
 		live.Values[m.ID] = v
 	case show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Tempo,
-		show.Level, show.Pulse, show.Player, show.Button, show.Controller, show.MIDIOut:
+		show.Level, show.Pulse, show.Player, show.Button, show.Controller, show.MIDIOut, show.Look, show.Chaser, show.Cues:
 	}
+}
+
+// Flip flips Toggle module, as a trigger into it would.
+func (e *Engine) Flip(module string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.toggles[module] = !e.toggles[module]
 }
 
 // MapValue maps v from the range from to the range to, turned over

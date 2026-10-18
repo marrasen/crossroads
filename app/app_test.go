@@ -290,3 +290,28 @@ func TestAControlLearnedJoinsItsController(t *testing.T) {
 		t.Errorf("having forgotten c1, the controls are %+v", m.Controls)
 	}
 }
+
+// TestALookIsAddedWarmAndItsLevelsChange: a new look holds a warm
+// white on every light, at 0; its levels change and go, and a fade is
+// kept within its bounds.
+func TestALookIsAddedWarmAndItsLevelsChange(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	a.Handle(0, AddModule{Kind: show.Look})
+	m := named(t, a, "Look")
+	if len(m.Lights) != 1 || m.Levels["dimmer"] != 1 || m.Value != 0 {
+		t.Fatalf("a new look is %+v", m)
+	}
+	a.Handle(0, SetLevel{Module: m.ID, Role: "uv", Level: 2})
+	a.Handle(0, SetLevel{Module: m.ID, Role: "blue", Level: -1})
+	if m := named(t, a, "Look"); m.Levels["uv"] != 1 {
+		t.Errorf("uv set to 2 is %v", m.Levels["uv"])
+	} else if _, ok := m.Levels["blue"]; ok {
+		t.Error("blue let go is held still")
+	}
+	a.Handle(0, AddModule{Kind: show.Chaser})
+	c := named(t, a, "Chaser")
+	a.Handle(0, SetFade{Module: c.ID, Fade: 3})
+	if c := named(t, a, "Chaser"); c.Fade != 1 {
+		t.Errorf("a chaser's fade set to 3 is %v", c.Fade)
+	}
+}

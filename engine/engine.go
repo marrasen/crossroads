@@ -85,7 +85,7 @@ func Ports(s *show.Show, m *show.Module) (ins, outs []Port) {
 			n := string(rune('0' + i))
 			ins = append(ins, Port{"in" + n, "Light " + n, Light})
 		}
-		return ins, []Port{{"out", "DMX", DMX}}
+		return append(ins, overridePorts...), []Port{{"out", "DMX", DMX}}
 	case show.DMXOut, show.StageView:
 		return []Port{{"in", "DMX", DMX}}, nil
 	case show.AudioIn:
@@ -123,6 +123,12 @@ func Ports(s *show.Show, m *show.Module) (ins, outs []Port) {
 		return []Port{{"in", "Clock", Clock}}, []Port{{"out", "Every", Trigger}}
 	case show.Toggle:
 		return []Port{{"in", "Flip", Trigger}}, []Port{{"out", "On or off", Value}}
+	case show.Look:
+		return []Port{{"level", "Level", Value}}, []Port{{"out", "Light", Light}}
+	case show.Chaser:
+		return append(stepPorts(m.Kind), Port{"next", "Next step", Trigger}, Port{"clock", "Clock", Clock}), []Port{{"out", "Light", Light}}
+	case show.Cues:
+		return append(stepPorts(m.Kind), Port{"go", "GO", Trigger}, Port{"back", "Back", Trigger}), []Port{{"out", "Light", Light}}
 	}
 	return nil, nil
 }
@@ -206,6 +212,16 @@ type Live struct {
 	Playing Playing
 	// Desks are what each Controller shows, by module.
 	Desks map[string]Desk
+	// Steps are where each Chaser and Cue list is, by module, and
+	// Overrides which of each Mixer's overrides are on: blackout,
+	// flash and hold.
+	Steps     map[string]Stepping
+	Overrides map[string][3]bool
+	// Owners are, for the mixer the first stage view shows, which
+	// module each slot's light comes from now, by slot.
+	Owners map[int]string
+	// Log is what happened lately, the latest last.
+	Log []Note
 }
 
 // An Engine runs a show's modules.
@@ -251,6 +267,16 @@ type Engine struct {
 	everys  map[string]int64
 	toggles map[string]bool
 	learnt  []Learnt
+	// steppers are where each Chaser and Cue list is; held the
+	// overrides held from the Live tab, and frozen what each Mixer held
+	// played; flashSlots the slots a flash brings to full; layerOf the
+	// module each layer is; and log what happened lately.
+	steppers   map[string]*stepper
+	held       map[portKey]bool
+	frozen     map[string]dmx.Universe
+	flashSlots []int
+	layerOf    map[*mix.Layer]string
+	log        []Note
 
 	// Listen opens an Audio in's input, [Listen] where it is nil, and
 	// now tells the time, [time.Now] where it is nil. Tests set them
@@ -296,7 +322,8 @@ func New(changed func()) *Engine {
 	return &Engine{layers: map[string]*mix.Layer{}, mixers: map[string]*mix.Mixer{}, heard: map[string][]*mix.Layer{}, outs: map[string]*out{},
 		values: map[portKey]any{}, changed: changed, ears: map[string]*ear{}, follow: map[string]*follower{},
 		tempos: map[string]*tempo{}, levels: map[string]float64{}, pressed: map[string]bool{}, bar: math.MinInt64,
-		desks: map[string]*desk{}, senders: map[string]*sender{}, everys: map[string]int64{}, toggles: map[string]bool{}}
+		desks: map[string]*desk{}, senders: map[string]*sender{}, everys: map[string]int64{}, toggles: map[string]bool{},
+		steppers: map[string]*stepper{}, held: map[portKey]bool{}, frozen: map[string]dmx.Universe{}, layerOf: map[*mix.Layer]string{}}
 }
 
 // Set runs show s from now on: its modules in its wires' order, with a
@@ -319,13 +346,18 @@ func (e *Engine) Set(s show.Show) {
 		}
 	}
 	e.home = home
+	e.flashSlots = flashSlotsOf(&e.s, cat)
 	keep := map[string]bool{}
 	for _, m := range e.s.Modules {
 		keep[m.ID] = true
 		switch m.Kind {
-		case show.Lights:
+		case show.Lights, show.Look, show.Chaser, show.Cues:
 			if e.layers[m.ID] == nil {
 				e.layers[m.ID] = mix.NewLayer()
+				e.layerOf[e.layers[m.ID]] = m.ID
+			}
+			if (m.Kind == show.Chaser || m.Kind == show.Cues) && e.steppers[m.ID] == nil {
+				e.steppers[m.ID] = &stepper{at: -1, from: -1, t: 1}
 			}
 		case show.Mixer:
 			if e.mixers[m.ID] == nil {
@@ -383,9 +415,21 @@ func (e *Engine) Set(s show.Show) {
 			show.Map, show.Every, show.Toggle:
 		}
 	}
-	for id := range e.layers {
+	for id, l := range e.layers {
 		if !keep[id] {
 			delete(e.layers, id)
+			delete(e.layerOf, l)
+			delete(e.steppers, id)
+		}
+	}
+	for k := range e.held {
+		if !keep[k.module] {
+			delete(e.held, k)
+		}
+	}
+	for id := range e.frozen {
+		if !keep[id] {
+			delete(e.frozen, id)
 		}
 	}
 	for id := range e.mixers {
@@ -524,6 +568,26 @@ func order(s *show.Show) []string {
 	return out
 }
 
+// stageMixer is the Mixer whose universe the first stage view shows,
+// "" for none.
+func (e *Engine) stageMixer() string {
+	for _, id := range e.order {
+		m := e.s.Module(id)
+		if m == nil || m.Kind != show.StageView {
+			continue
+		}
+		for _, w := range e.s.Wires {
+			if w.To.Module == id {
+				if f := e.s.Module(w.From.Module); f != nil && f.Kind == show.Mixer {
+					return f.ID
+				}
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
 // back reports whether input e of s feeds back, and so does not put
 // what feeds it first.
 func back(s *show.Show, e show.End) bool {
@@ -558,7 +622,8 @@ func (e *Engine) Tick() Live {
 	defer e.mu.Unlock()
 	cat := e.s.Catalog()
 	live := Live{Values: map[string]float64{}, Outs: map[string]dmx.State{}, Clocks: map[string]Count{}, Says: map[string]string{},
-		Desks: map[string]Desk{}}
+		Desks: map[string]Desk{}, Steps: map[string]Stepping{}, Overrides: map[string][3]bool{}}
+	stageMixer := e.stageMixer()
 	staged := false
 	now := e.now()
 	var dt float64
@@ -597,8 +662,13 @@ func (e *Engine) Tick() Live {
 				}
 			}
 			mx.SetMaster(m.Value)
-			e.values[portKey{id, "out"}] = mx.Merge(&e.dims)
+			u, on := e.overrideAll(id, mx.Merge(&e.dims))
+			e.values[portKey{id, "out"}] = u
 			live.Values[id] = m.Value
+			live.Overrides[id] = on
+			if stageMixer == "" || stageMixer == id {
+				e.owners(id, on, &live)
+			}
 		case show.DMXOut:
 			u, ok := e.input(id, "in").(dmx.Universe)
 			if !ok {
@@ -630,15 +700,21 @@ func (e *Engine) Tick() Live {
 			e.send(m, now, &live)
 		case show.Map, show.Every, show.Toggle:
 			e.logic(m, &live)
+		case show.Look:
+			e.look(m, cat, &live)
+		case show.Chaser, show.Cues:
+			e.stepOn(m, dt, &live)
 		case show.Button:
 			fired := e.pressed[id]
 			e.values[portKey{id, "out"}] = fired
 			if fired {
 				live.Values[id] = 1
+				e.note(now, m.Name+" pressed")
 			}
 		}
 	}
 	live.Playing = Playing{Song: e.song, Pos: e.state.Pos, Len: e.state.Len, Playing: e.state.Playing, Err: e.deckErr}
+	live.Log = slices.Clone(e.log)
 	return live
 }
 

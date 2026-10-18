@@ -11,6 +11,7 @@ import (
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
 	"github.com/marrasen/gunim-dmx/dmx"
+	"github.com/marrasen/gunim-dmx/fixtures"
 	"github.com/marrasen/gunim/audio/capture"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/icon"
@@ -40,6 +41,11 @@ type routes struct {
 	follows map[string]*widget.Checkbox
 	everys  map[string]*widget.Segmented
 	maps    map[string]*mapFields
+	// levels are each Look's sliders, by role; fades each Chaser's
+	// fade, and cueFades each Cue list's.
+	levels   map[string]map[string]*widget.Slider
+	fades    map[string]*widget.Slider
+	cueFades map[string]*widget.NumberField
 	// heard are the sound card's inputs, listed once, as an Audio in
 	// first asks.
 	heard  []capture.Device
@@ -62,7 +68,8 @@ var devices = []struct{ id, name string }{
 func newRoutes() *routes {
 	r := &routes{view: graph.NewView(), faders: map[string]*widget.Slider{}, devices: map[string]*widget.Dropdown{},
 		inputs: map[string]*widget.Dropdown{}, taps: map[string]*widget.Button{}, bpms: map[string]*widget.NumberField{}, follows: map[string]*widget.Checkbox{},
-		everys: map[string]*widget.Segmented{}, maps: map[string]*mapFields{}, ports: map[string][2][]engine.Port{}}
+		everys: map[string]*widget.Segmented{}, maps: map[string]*mapFields{}, levels: map[string]map[string]*widget.Slider{},
+		fades: map[string]*widget.Slider{}, cueFades: map[string]*widget.NumberField{}, ports: map[string][2][]engine.Port{}}
 	r.view.Content = r.content
 	r.view.Accepts = func(from, to graph.End) (bool, string) {
 		if r.st == nil {
@@ -99,6 +106,7 @@ var addGroups = []struct {
 }{
 	{"Light", []show.Kind{show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView}},
 	{"Sound and beat", []show.Kind{show.AudioIn, show.Player, show.Beat, show.Tempo, show.Level, show.Pulse}},
+	{"Looks", []show.Kind{show.Look, show.Chaser, show.Cues}},
 	{"Controllers and logic", []show.Kind{show.Button, show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle}},
 }
 
@@ -139,6 +147,12 @@ func kindIcon(k show.Kind) *icon.Icon {
 		return icon.Repeat
 	case show.Toggle:
 		return icon.ToggleRight
+	case show.Look:
+		return icon.Palette
+	case show.Chaser:
+		return icon.Repeat2
+	case show.Cues:
+		return icon.ListOrdered
 	}
 	return icon.Plus
 }
@@ -206,9 +220,62 @@ func (r *routes) content(id string) gunim.Node {
 		return padded(sg)
 	case show.Map:
 		return r.mapContent(m)
+	case show.Look:
+		return r.lookContent(m)
+	case show.Chaser:
+		sg := widget.NewSegmented(beatNames...)
+		sg.SetSelected(beatIndex(m.Every), nil)
+		sg.OnChange = func(i int, _ *gunim.UI) gunim.Intent { return app.SetEvery{Module: id, Every: beatCounts[i]} }
+		r.everys[id] = sg
+		fade := widget.NewSlider(0, 1)
+		fade.SetValue(float32(m.Fade), nil)
+		fade.OnCommit = func(v float32, _ *gunim.UI) gunim.Intent { return app.SetFade{Module: id, Fade: float64(v)} }
+		r.fades[id] = fade
+		return padded(widget.NewWrap(widget.NewSized(sg, lookRowW, 30), widget.NewSized(widget.NewSliderRow("Fade", fade), lookRowW, 28)))
+	case show.Cues:
+		f := widget.NewNumberField(0, 60)
+		f.Decimals, f.Suffix, f.Increment = 1, " s fade", 0.5
+		f.SetValue(m.Fade, nil)
+		f.OnCommit = func(v float64, _ *gunim.UI) gunim.Intent { return app.SetFade{Module: id, Fade: v} }
+		r.cueFades[id] = f
+		return padded(f)
 	case show.Lights, show.Mixer, show.StageView, show.Beat, show.Level, show.Player, show.Controller, show.MIDIOut, show.Toggle:
 	}
 	return nil
+}
+
+// lookRowW is how wide a row of a Look's or a Chaser's box is.
+const lookRowW = 236
+
+// lookRoles are the things look m's lights do, in the order a desk
+// lists them.
+func lookRoles(s *show.Show, m *show.Module) []fixtures.Role {
+	var members []fixtures.Patch
+	for _, id := range m.Lights {
+		if p := s.Light(id); p != nil {
+			members = append(members, *p)
+		}
+	}
+	return s.Catalog().RolesInGroup(members)
+}
+
+// lookContent is a Look's box: a slider for each thing its lights do.
+func (r *routes) lookContent(m *show.Module) gunim.Node {
+	id := m.ID
+	roles := lookRoles(&r.st.Show, m)
+	rows := make([]gunim.Node, 0, len(roles))
+	sliders := map[string]*widget.Slider{}
+	for _, role := range roles {
+		sl := widget.NewSlider(0, 1)
+		sl.SetValue(float32(m.Levels[string(role)]), nil)
+		sl.OnCommit = func(v float32, _ *gunim.UI) gunim.Intent {
+			return app.SetLevel{Module: id, Role: string(role), Level: float64(v)}
+		}
+		sliders[string(role)] = sl
+		rows = append(rows, widget.NewSized(widget.NewSliderRow(role.Label(), sl), lookRowW, 26))
+	}
+	r.levels[id] = sliders
+	return padded(widget.NewWrap(rows...))
 }
 
 // The beats an Every offers to fire every, and what its buttons say.
@@ -384,6 +451,27 @@ func (r *routes) show(s *app.State, u *gunim.UI) {
 	for id, f := range r.maps {
 		f.set(s.Show.Module(id), u)
 	}
+	maps.DeleteFunc(r.levels, func(id string, _ map[string]*widget.Slider) bool { return s.Show.Module(id) == nil })
+	for id, sliders := range r.levels {
+		m := s.Show.Module(id)
+		for role, sl := range sliders {
+			if !sl.Held() {
+				sl.SetValue(float32(m.Levels[role]), u)
+			}
+		}
+	}
+	maps.DeleteFunc(r.fades, func(id string, _ *widget.Slider) bool { return s.Show.Module(id) == nil })
+	for id, sl := range r.fades {
+		if !sl.Held() {
+			sl.SetValue(float32(s.Show.Module(id).Fade), u)
+		}
+	}
+	maps.DeleteFunc(r.cueFades, func(id string, _ *widget.NumberField) bool { return s.Show.Module(id) == nil })
+	for id, f := range r.cueFades {
+		if u == nil || !u.HasFocus(f) {
+			f.SetValue(s.Show.Module(id).Fade, u)
+		}
+	}
 	r.sync(u)
 }
 
@@ -455,6 +543,13 @@ func (r *routes) sync(u *gunim.UI) {
 		case show.Map:
 			n.Body, n.Width = 84, 260
 			n.Glow = float32(r.value(m)) * 0.4
+		case show.Look:
+			n.Body, n.Width = float32(len(lookRoles(s, m)))*26+8, 260
+			n.Glow = float32(r.value(m)) * 0.6
+		case show.Chaser:
+			n.Body, n.Width = 70, 260
+		case show.Cues:
+			n.Body, n.Width = 40, 220
 		case show.Controller, show.MIDIOut:
 		case show.Player:
 			if r.played.Playing.Playing {
@@ -586,6 +681,17 @@ func (r *routes) detail(m *show.Module) string {
 			return "On"
 		}
 		return "Off"
+	case show.Look:
+		return strconv.Itoa(int(r.value(m)*100+0.5)) + "% up"
+	case show.Chaser, show.Cues:
+		st, ok := r.played.Steps[m.ID]
+		switch {
+		case !ok || len(st.Steps) == 0:
+			return "Nothing wired in"
+		case st.At < 0:
+			return "Before the first of " + strconv.Itoa(len(st.Steps))
+		}
+		return strconv.Itoa(st.At+1) + " of " + strconv.Itoa(len(st.Steps))
 	case show.Pulse:
 		every := m.Every
 		if every <= 0 {

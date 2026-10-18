@@ -198,12 +198,17 @@ func TestTheFaderTakesOverOnlyOnceItPassesItsValue(t *testing.T) {
 	r.d.mu.Unlock()
 	r.now = r.now.Add(3 * time.Second)
 	r.tick()
-	for range 200 {
+	// Wait for it to open again, wholly.
+	p := r.e.desks[r.ctl].port
+	for range 2000 {
 		r.tick()
 		r.d.mu.Lock()
 		n := r.d.opens
 		r.d.mu.Unlock()
-		if n >= 2 {
+		p.mu.Lock()
+		busy := p.busy
+		p.mu.Unlock()
+		if n >= 2 && !busy {
 			break
 		}
 		time.Sleep(time.Millisecond)

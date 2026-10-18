@@ -187,6 +187,9 @@ func (e *Engine) play() {
 	}
 	if e.state.Pos == 0 {
 		e.ev.start = true
+		if g := e.s.Song(e.song); g != nil {
+			e.note(e.now(), g.Title+" started")
+		}
 	}
 	e.Deck.Play()
 	e.state.Playing = true
@@ -212,6 +215,9 @@ func (e *Engine) playlist() {
 	}
 	if st.Ended && !was.Ended {
 		e.ev.end = true
+		if g := e.s.Song(e.song); g != nil {
+			e.note(e.last, g.Title+" ended")
+		}
 		// On to the next song that will play: a song whose file is gone
 		// is passed over, as the show goes on.
 		for i := e.songIndex(e.song) + 1; i > 0 && i < len(e.s.Songs); i++ {

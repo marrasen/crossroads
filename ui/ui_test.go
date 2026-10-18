@@ -365,3 +365,70 @@ func TestTheControllersTabShowsEachControllerAndLearns(t *testing.T) {
 		t.Error("the learn button asked to learn nothing")
 	}
 }
+
+// TestTheLivePageHoldsBlackoutWhileItIsHeld: the pad asks for blackout
+// as it is pressed and lets go as it is let go; a look's pad brings it
+// up; and the Monitor tab builds.
+func TestTheLivePageHoldsBlackoutWhileItIsHeld(t *testing.T) {
+	s := show.Start()
+	look := s.NewID("m")
+	s.Modules = append(s.Modules, show.Module{ID: look, Kind: show.Look, Name: "Warm", Lights: []string{s.Rig.Lights[0].ID}})
+	s.Layout.Show(show.TabLive)
+	s.Layout.Show(show.TabWatch)
+	w := gunimtest.New(t, geom.Sz(1280, 800), nil)
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: s}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		w.Frame(time.Second / 60)
+	}
+	f := frameOf(t, w)
+	lt, ok := f.tabs[show.TabLive].(*liveTab)
+	if !ok {
+		t.Fatal("no Live tab")
+	}
+	lp := lt.page
+	if _, ok := f.tabs[show.TabWatch].(*monitor); !ok {
+		t.Fatal("no Monitor tab")
+	}
+	ui := frameUI(t, w)
+	at, _ := ui.Bounds(lp)
+	press := func(label string) (down, up []gunim.Intent) {
+		var r geom.Rect
+		for _, pd := range lp.pads {
+			if pd.label == label {
+				r = pd.r
+			}
+		}
+		if r.Empty() {
+			t.Fatalf("no %s pad among %d", label, len(lp.pads))
+		}
+		p := at.Min.Add(r.Center())
+		w.Input(input.PointerMove{Pos: p})
+		w.Input(input.PointerDown{Pos: p, Button: input.ButtonPrimary, Clicks: 1})
+		w.Frame(time.Second / 60)
+		for len(c.Intents()) > 0 {
+			down = append(down, (<-c.Intents()).Intent)
+		}
+		w.Input(input.PointerUp{Pos: p, Button: input.ButtonPrimary})
+		w.Frame(time.Second / 60)
+		for len(c.Intents()) > 0 {
+			up = append(up, (<-c.Intents()).Intent)
+		}
+		return down, up
+	}
+	down, up := press("Blackout")
+	if len(down) != 1 || down[0] != (app.Override{Module: lp.ids[0], Which: engine.Blackout, On: true}) {
+		t.Errorf("pressed, blackout asks %v", down)
+	}
+	if len(up) != 1 || up[0] != (app.Override{Module: lp.ids[0], Which: engine.Blackout}) {
+		t.Errorf("let go, blackout asks %v", up)
+	}
+	down, _ = press("Warm")
+	if len(down) != 1 || down[0] != (app.SetValue{Module: look, Value: 1, Done: true}) {
+		t.Errorf("the look's pad asks %v", down)
+	}
+}

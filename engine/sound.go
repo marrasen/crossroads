@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -172,6 +173,10 @@ func (e *Engine) sound(m *show.Module, dt float64, live *Live) {
 		var c Count
 		if f != nil {
 			c = Count{BPM: f.BPM(), Beats: f.Beats(), Sure: f.BPM() > 0 && f.Confidence() >= sure}
+			if b := int64(c.Beats); c.Sure && b != f.said {
+				f.said = b
+				e.note(e.last, fmt.Sprintf("%s: beat %d at %.1f BPM", m.Name, b, c.BPM))
+			}
 		}
 		e.values[key] = c
 		live.Clocks[m.ID] = c
@@ -220,7 +225,7 @@ func (e *Engine) sound(m *show.Module, dt float64, live *Live) {
 		e.values[key] = v
 		live.Values[m.ID] = v
 	case show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView, show.Player, show.Button,
-		show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle:
+		show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle, show.Look, show.Chaser, show.Cues:
 	}
 }
 
@@ -228,6 +233,8 @@ func (e *Engine) sound(m *show.Module, dt float64, live *Live) {
 type follower struct {
 	*beat.Live
 	rate int
+	// said is the beat the log was last told of.
+	said int64
 }
 
 // Flash is how bright a pulse every beats long is at beats counted:
