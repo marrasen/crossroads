@@ -46,6 +46,9 @@ type frame struct {
 	st       app.State
 	last     engine.Live
 	named    string
+	// ask is the dialog asking whether to leave a show not saved,
+	// while it shows.
+	ask *widget.Dialog
 }
 
 func newFrame(win int) *frame {
@@ -56,14 +59,16 @@ func newFrame(win int) *frame {
 		{Label: "Open…", Icon: icon.FolderOpen, Hint: "Ctrl+O"},
 		{Label: "Save", Icon: icon.Save, Hint: "Ctrl+S"},
 	})
-	f.menu.OnPick = func(i int, _ *gunim.UI) gunim.Intent {
+	f.menu.OnPick = func(i int, u *gunim.UI) gunim.Intent {
 		switch i {
 		case 0:
-			return app.New{}
+			f.leave(app.New{}, u)
 		case 1:
-			return app.Open{}
+			f.leave(app.Open{}, u)
+		default:
+			return app.Save{}
 		}
-		return app.Save{}
+		return nil
 	}
 	f.d.Content = f.content
 	f.d.Face = func(n *dock.Node) dock.Face {
@@ -155,6 +160,12 @@ func (f *frame) Layout(c gunim.Constraints, _ gunim.Frame, kids gunim.Children) 
 	title.Place(geom.Pt(ms.W+16, 0))
 	d.Layout(gunim.Tight(geom.Sz(max(size.W-16, 0), max(size.H-titleH-8, 0))))
 	d.Place(geom.Pt(8, titleH))
+	for i := 4; i < kids.Len(); i++ {
+		// A dialog, over the whole window.
+		k := kids.At(i)
+		k.Layout(gunim.Tight(size))
+		k.Place(geom.Point{})
+	}
 	return size
 }
 
@@ -177,11 +188,40 @@ func (f *frame) CatchKey(e input.Event, u *gunim.UI) bool {
 	case input.KeyS:
 		u.Send(f, app.Save{})
 	case input.KeyO:
-		u.Send(f, app.Open{})
+		f.leave(app.Open{}, u)
 	case input.KeyN:
-		u.Send(f, app.New{})
+		f.leave(app.New{}, u)
 	default:
 		return false
 	}
 	return true
+}
+
+// leave asks the application for in, which leaves the show for another:
+// first, where the show has changes not saved, the user says whether to
+// throw them away.
+func (f *frame) leave(in gunim.Intent, u *gunim.UI) {
+	if !f.st.Unsaved {
+		u.Send(f, in)
+		return
+	}
+	if f.ask != nil {
+		return
+	}
+	d := widget.NewDialog("Leave this show?")
+	d.Danger = true
+	body := widget.NewLabel("It has changes that are not saved. They go if you leave it.")
+	body.MaxLines = 3
+	d.Body = body
+	d.SetButtons("Leave it", "Cancel")
+	d.OnAccept = func(*gunim.UI) gunim.Intent {
+		f.ask = nil
+		return in
+	}
+	d.OnDismiss = func(*gunim.UI) gunim.Intent {
+		f.ask = nil
+		return nil
+	}
+	f.ask = d
+	u.Insert(f, d)
 }

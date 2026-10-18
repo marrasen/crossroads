@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/marrasen/crossroads/show"
@@ -90,5 +91,31 @@ func TestWiresJoinOneSignalOnceAndNeverInALoop(t *testing.T) {
 	s.Wires = append(s.Wires, show.Wire{ID: "x", From: show.End{Module: dome.ID, Port: "out"}, To: show.End{Module: mixer.ID, Port: "in2"}})
 	if ok, _ := CanJoin(&s, show.End{Module: mixer.ID, Port: "out"}, show.End{Module: mixer.ID, Port: "in3"}); ok {
 		t.Error("a mixer fed its own output")
+	}
+}
+
+// TestALightsModuleGoneGoesDark: the mixer hears it no more, and the
+// stage, its wire pulled, shows the lights at rest.
+func TestALightsModuleGoneGoesDark(t *testing.T) {
+	s := show.Start()
+	e := New(nil)
+	defer e.Close()
+	e.Set(s)
+	if live := e.Tick(); live.Stage[0] == 0 {
+		t.Fatal("the dome is dark to begin with")
+	}
+	s.RemoveModule(moduleNamed(t, &s, "Dome").ID)
+	e.Set(s)
+	if live := e.Tick(); live.Stage[0] != 0 {
+		t.Errorf("the module gone, red still plays %d", live.Stage[0])
+	}
+	s = show.Start()
+	e.Set(s)
+	e.Tick()
+	view := moduleNamed(t, &s, "Stage").ID
+	s.Wires = slices.DeleteFunc(s.Wires, func(w show.Wire) bool { return w.To.Module == view })
+	e.Set(s)
+	if live := e.Tick(); live.Stage[0] != 0 {
+		t.Errorf("its wire pulled, the stage still shows red at %d", live.Stage[0])
 	}
 }

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"maps"
 	"strconv"
 
 	"github.com/marrasen/crossroads/app"
@@ -28,6 +29,9 @@ type routes struct {
 	faders  map[string]*widget.Slider
 	devices map[string]*widget.Dropdown
 	size    geom.Size
+	// ports are each module's inputs and outputs, as the show last
+	// gave them.
+	ports map[string][2][]engine.Port
 }
 
 // The DMX boxes a DMX out offers, by the show's names for them.
@@ -40,7 +44,8 @@ var devices = []struct{ id, name string }{
 }
 
 func newRoutes() *routes {
-	r := &routes{view: graph.NewView(), faders: map[string]*widget.Slider{}, devices: map[string]*widget.Dropdown{}}
+	r := &routes{view: graph.NewView(), faders: map[string]*widget.Slider{}, devices: map[string]*widget.Dropdown{},
+		ports: map[string][2][]engine.Port{}}
 	r.view.Content = r.content
 	r.view.Accepts = func(from, to graph.End) (bool, string) {
 		if r.st == nil {
@@ -85,6 +90,11 @@ func (r *routes) content(id string) gunim.Node {
 			names[i] = d.name
 		}
 		d := widget.NewDropdown(widget.Labels(names...))
+		for i, dv := range devices {
+			if dv.id == m.Out.Device {
+				d.SetSelected(i, nil)
+			}
+		}
 		d.OnChange = func(i int, _ *gunim.UI) gunim.Intent {
 			out := m.Out
 			if mm := r.st.Show.Module(id); mm != nil {
@@ -109,9 +119,15 @@ func padded(n gunim.Node) gunim.Node {
 	return p
 }
 
-// show follows the show.
+// show follows the show, working out each module's ports once.
 func (r *routes) show(s *app.State, u *gunim.UI) {
 	r.st = s
+	clear(r.ports)
+	for i := range s.Show.Modules {
+		m := &s.Show.Modules[i]
+		ins, outs := engine.Ports(&s.Show, m)
+		r.ports[m.ID] = [2][]engine.Port{ins, outs}
+	}
 	for id, d := range r.devices {
 		if m := s.Show.Module(id); m != nil {
 			for i, dv := range devices {
@@ -125,9 +141,14 @@ func (r *routes) show(s *app.State, u *gunim.UI) {
 }
 
 // live follows what the engine plays: the faders move, and the boxes
-// and the wires glow as their values rise.
+// and the wires glow as their values rise. Nothing changed, nothing is
+// done.
 func (r *routes) live(l engine.Live, u *gunim.UI) {
+	same := maps.Equal(l.Values, r.played.Values) && maps.Equal(l.Outs, r.played.Outs)
 	r.played = l
+	if same {
+		return
+	}
 	for id, s := range r.faders {
 		if v, ok := l.Values[id]; ok && !s.Held() && float64(s.Value()) != v {
 			s.SetValue(float32(v), u)
@@ -151,7 +172,8 @@ func (r *routes) sync(u *gunim.UI) {
 	var g graph.Graph
 	for i := range s.Modules {
 		m := &s.Modules[i]
-		ins, outs := engine.Ports(s, m)
+		ps := r.ports[m.ID]
+		ins, outs := ps[0], ps[1]
 		n := graph.Node{ID: m.ID, Title: m.Name, Sub: r.detail(m), At: m.At, Ins: ports(th, ins), Outs: ports(th, outs)}
 		if th != nil {
 			n.Color = kindInk(th, m.Kind)

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim-dmx/artnet"
@@ -135,7 +136,8 @@ func feeds(s *show.Show, a, b string) bool {
 
 // Live is what the engine has made, for the windows to show.
 type Live struct {
-	// Stage is the universe the first stage view shows.
+	// Stage is the universe the first stage view, in the modules' order,
+	// shows.
 	Stage dmx.Universe
 	// Values are what each module's Value output carries, by module.
 	Values map[string]float64
@@ -145,23 +147,32 @@ type Live struct {
 
 // An Engine runs a show's modules.
 type Engine struct {
-	mu      sync.Mutex
-	s       show.Show
-	order   []string
-	layers  map[string]*mix.Layer
-	mixers  map[string]*mix.Mixer
+	mu     sync.Mutex
+	s      show.Show
+	order  []string
+	layers map[string]*mix.Layer
+	mixers map[string]*mix.Mixer
+	// heard are the layers each mixer merged last tick.
+	heard   map[string][]*mix.Layer
 	dims    [dmx.Channels]bool
 	home    dmx.Universe
 	outs    map[string]*out
-	stage   dmx.Universe
 	values  map[portKey]any
 	changed func()
 }
 
-// out is a DMX out's box, and what it was opened for.
+// out is a DMX out's box, and what it was opened for. gone says it
+// was let go, which a connection still on its way then lets go too.
 type out struct {
 	output show.Output
 	e      *dmx.Engine
+	gone   atomic.Bool
+}
+
+// close lets the box go, now and once a connection on its way lands.
+func (o *out) close() {
+	o.gone.Store(true)
+	o.e.Close()
 }
 
 type portKey struct {
@@ -171,7 +182,7 @@ type portKey struct {
 // New returns an engine of no modules. changed, where set, runs from
 // any goroutine as a DMX box connects, fails or goes.
 func New(changed func()) *Engine {
-	return &Engine{layers: map[string]*mix.Layer{}, mixers: map[string]*mix.Mixer{}, outs: map[string]*out{},
+	return &Engine{layers: map[string]*mix.Layer{}, mixers: map[string]*mix.Mixer{}, heard: map[string][]*mix.Layer{}, outs: map[string]*out{},
 		values: map[portKey]any{}, changed: changed}
 }
 
@@ -214,7 +225,7 @@ func (e *Engine) Set(s show.Show) {
 				continue
 			}
 			if o != nil {
-				o.e.Close()
+				o.close()
 			}
 			e.outs[m.ID] = e.open(m.Out)
 		case show.Fader, show.StageView:
@@ -228,11 +239,12 @@ func (e *Engine) Set(s show.Show) {
 	for id := range e.mixers {
 		if !keep[id] {
 			delete(e.mixers, id)
+			delete(e.heard, id)
 		}
 	}
 	for id, o := range e.outs {
 		if m := e.s.Module(id); m == nil || m.Kind != show.DMXOut {
-			o.e.Close()
+			o.close()
 			delete(e.outs, id)
 		}
 	}
@@ -271,10 +283,17 @@ func (e *Engine) open(o show.Output) *out {
 			return sacn.Dial(max(o.Universe, sacn.MinUniverse), "crossroads", opts...)
 		}
 	}
+	ob := &out{output: o, e: eng}
 	if opener != nil {
-		go func() { _ = eng.Connect(opener) }()
+		go func() {
+			_ = eng.Connect(opener)
+			if ob.gone.Load() {
+				// Let go while it connected: the box it opened goes too.
+				eng.Close()
+			}
+		}()
 	}
-	return &out{output: o, e: eng}
+	return ob
 }
 
 // order is the modules of s, each after every module that feeds it.
@@ -330,6 +349,7 @@ func (e *Engine) Tick() Live {
 	defer e.mu.Unlock()
 	cat := e.s.Catalog()
 	live := Live{Values: map[string]float64{}, Outs: map[string]dmx.State{}}
+	staged := false
 	for _, id := range e.order {
 		m := e.s.Module(id)
 		if m == nil {
@@ -343,12 +363,14 @@ func (e *Engine) Tick() Live {
 			e.lights(m, cat)
 		case show.Mixer:
 			mx := e.mixers[id]
-			for _, l := range e.layers {
+			for _, l := range e.heard[id] {
 				mx.Remove(l)
 			}
+			e.heard[id] = e.heard[id][:0]
 			for i := 1; i <= mixerIns; i++ {
 				if l, ok := e.input(id, "in"+string(rune('0'+i))).(*mix.Layer); ok {
 					mx.Add(l)
+					e.heard[id] = append(e.heard[id], l)
 				}
 			}
 			mx.SetMaster(m.Value)
@@ -364,12 +386,19 @@ func (e *Engine) Tick() Live {
 				live.Outs[id] = o.e.State()
 			}
 		case show.StageView:
+			if staged {
+				continue
+			}
+			// The first stage view shows what is wired into it, and with
+			// nothing wired, the lights at rest.
+			staged = true
 			if u, ok := e.input(id, "in").(dmx.Universe); ok {
-				e.stage = u
+				live.Stage = u
+			} else {
+				live.Stage = e.home
 			}
 		}
 	}
-	live.Stage = e.stage
 	return live
 }
 
@@ -404,7 +433,7 @@ func (e *Engine) Close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for id, o := range e.outs {
-		o.e.Close()
+		o.close()
 		delete(e.outs, id)
 	}
 }

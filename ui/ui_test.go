@@ -108,3 +108,38 @@ func frameUI(t *testing.T, w *gunim.Window) *gunim.UI {
 	onUI(t, w, func(_ *frame, u *gunim.UI) { ui = u })
 	return ui
 }
+
+// TestLeavingAShowNotSavedAsksFirst: Ctrl+N asks, and only the answer
+// to leave it asks the application for a new show.
+func TestLeavingAShowNotSavedAsksFirst(t *testing.T) {
+	w := gunimtest.New(t, geom.Sz(1000, 700), nil)
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: show.Start(), Unsaved: true}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		w.Frame(time.Second / 60)
+	}
+	news := func() int {
+		n := 0
+		for len(c.Intents()) > 0 {
+			if _, ok := (<-c.Intents()).Intent.(app.New); ok {
+				n++
+			}
+		}
+		return n
+	}
+	w.Input(input.KeyPress{Key: input.KeyN, Mods: input.ModControl})
+	w.Frame(time.Second / 60)
+	f := frameOf(t, w)
+	if f.ask == nil || news() != 0 {
+		t.Fatal("Ctrl+N left a show not saved without asking")
+	}
+	var in gunim.Intent
+	onUI(t, w, func(f *frame, u *gunim.UI) { in = f.ask.OnAccept(u) })
+	if _, ok := in.(app.New); !ok {
+		t.Errorf("leaving it asks for %#v, not a new show", in)
+	}
+}

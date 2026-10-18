@@ -105,6 +105,9 @@ type App struct {
 	wins    map[int]*win
 	in      chan any
 	changed chan struct{}
+	// moving are the values of the faders held, not kept in the show
+	// yet, which the engine goes on playing as the show changes.
+	moving map[string]float64
 }
 
 // win is one of the application's windows.
@@ -134,7 +137,8 @@ func NewApp(s show.Show, path string, open Opener) *App {
 	if s.Layout.Window(0) == nil {
 		s.Layout = show.Start().Layout
 	}
-	a := &App{st: State{Show: s, Path: path}, open: open, wins: map[int]*win{},
+	prune(&s)
+	a := &App{st: State{Show: s, Path: path}, open: open, wins: map[int]*win{}, moving: map[string]float64{},
 		in: make(chan any, 64), changed: make(chan struct{}, 1)}
 	a.eng = engine.New(func() {
 		select {
@@ -251,8 +255,10 @@ func (a *App) Handle(win int, in gunim.Intent) {
 	case SetValue:
 		a.eng.SetValue(in.Module, in.Value)
 		if !in.Done {
+			a.moving[in.Module] = in.Value
 			return
 		}
+		delete(a.moving, in.Module)
 		if m := s.Module(in.Module); m != nil {
 			m.Value = min(max(in.Value, 0), 1)
 		}
@@ -313,9 +319,24 @@ func (a *App) Handle(win int, in gunim.Intent) {
 // setShow makes s the show: the engine plays it, it is marked unsaved,
 // and the windows show it.
 func (a *App) setShow(s show.Show) {
+	prune(&s)
 	a.st.Show, a.st.Unsaved = s, true
 	a.eng.Set(s)
+	for id, v := range a.moving {
+		// A fader held plays on where it is held.
+		a.eng.SetValue(id, v)
+	}
 	a.publish()
+}
+
+// prune takes out the wires of s into or out of ports that are gone,
+// as a Lights module's input for a colour none of its lights has now.
+func prune(s *show.Show) {
+	s.Wires = slices.DeleteFunc(s.Wires, func(w show.Wire) bool {
+		_, from := engine.PortOf(s, w.From, true)
+		_, to := engine.PortOf(s, w.To, false)
+		return !from || !to
+	})
 }
 
 // replace opens show s, from path: the windows close and open again as
@@ -325,6 +346,8 @@ func (a *App) replace(s show.Show, path string) {
 	if s.Layout.Window(0) == nil {
 		s.Layout = show.Start().Layout
 	}
+	prune(&s)
+	clear(a.moving)
 	a.st = State{Show: s, Path: path}
 	a.eng.Set(s)
 	a.syncWindows()
@@ -389,11 +412,12 @@ func (a *App) graphChange(s *show.Show, c graph.Change) bool {
 		}
 		was := s.Wires[i]
 		s.Wires = slices.Delete(s.Wires, i, i+1)
+		from := show.End{Module: c.From.Node, Port: c.From.Port}
 		to := show.End{Module: c.To.Node, Port: c.To.Port}
-		if ok, _ := engine.CanJoin(s, was.From, to); !ok {
+		if ok, _ := engine.CanJoin(s, from, to); !ok {
 			return false
 		}
-		was.To = to
+		was.From, was.To = from, to
 		s.Wires = slices.Insert(s.Wires, i, was)
 		return true
 	case graph.Delete:

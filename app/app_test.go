@@ -104,3 +104,46 @@ func TestATabMovesInTheLayout(t *testing.T) {
 		t.Error("the Faders tab did not join the Routes")
 	}
 }
+
+// TestAFaderHeldPlaysOnAsTheShowChanges: and a light's colours gone,
+// their wires go too.
+func TestAFaderHeldPlaysOnAsTheShowChanges(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	green := named(t, a, "Green").ID
+	a.Handle(0, SetValue{Module: green, Value: 1})
+	a.Handle(0, graph.Move{To: map[string]geom.Point{green: geom.Pt(5, 5)}})
+	if live := a.eng.Tick(); live.Stage[1] != 255 {
+		t.Errorf("another edit put the held fader back: green plays %d", live.Stage[1])
+	}
+	a.Handle(0, RemoveLight{Light: a.st.Show.Rig.Lights[0].ID})
+	dome := named(t, a, "Dome").ID
+	for _, w := range a.st.Show.Wires {
+		if w.To.Module == dome {
+			t.Fatalf("a wire into a colour no light has stayed: %+v", w)
+		}
+	}
+}
+
+// TestAWiresOutputEndMoves: a replug may move either end.
+func TestAWiresOutputEndMoves(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	red, green, dome := named(t, a, "Red").ID, named(t, a, "Green").ID, named(t, a, "Dome").ID
+	var id string
+	for _, w := range a.st.Show.Wires {
+		if w.From.Module == red {
+			id = w.ID
+		}
+	}
+	a.Handle(0, graph.Delete{Wires: []string{"x"}})
+	for _, w := range a.st.Show.Wires {
+		if w.From.Module == green {
+			a.Handle(0, graph.Delete{Wires: []string{w.ID}})
+		}
+	}
+	a.Handle(0, graph.Replug{Wire: id, From: graph.End{Node: green, Port: "out"}, To: graph.End{Node: dome, Port: "red"}})
+	for _, w := range a.st.Show.Wires {
+		if w.ID == id && w.From.Module != green {
+			t.Errorf("the wire still runs from %s", w.From.Module)
+		}
+	}
+}

@@ -57,7 +57,10 @@ func (r *rig) show(st *app.State, u *gunim.UI) {
 			row.remove.OnClick = widget.Sends(app.RemoveLight{Light: id})
 			r.rows[p.ID] = row
 		}
-		row.addr.SetValue(float64(p.StartAddress), u)
+		if u == nil || !u.HasFocus(row.addr) {
+			// Not over an address being typed.
+			row.addr.SetValue(float64(p.StartAddress), u)
+		}
 	}
 	if !slices.Equal(ids, r.ids) {
 		for _, id := range r.ids {
