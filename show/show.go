@@ -27,6 +27,8 @@ type Show struct {
 	// Modules are the show's modules, and Wires what joins them.
 	Modules []Module `json:"modules"`
 	Wires   []Wire   `json:"wires"`
+	// Songs are the playlist, in the order it plays.
+	Songs []Song `json:"songs,omitempty"`
 	// Layout is where the tabs stood, in which windows.
 	Layout dock.Layout `json:"layout"`
 	// Next counts the IDs made, to make the next one.
@@ -81,11 +83,16 @@ const (
 	Level Kind = "level"
 	// Pulse is a value that flashes on the beat of a clock and fades.
 	Pulse Kind = "pulse"
+	// Player plays the playlist: its sound, a clock from each song's
+	// beats, and a trigger as each song starts and ends and each bar.
+	Player Kind = "player"
+	// Button is a button on screen, which fires a trigger.
+	Button Kind = "button"
 )
 
 // Kinds are the kinds of module, in the order the Routes tab offers
 // them.
-var Kinds = []Kind{Fader, Lights, Mixer, DMXOut, StageView, AudioIn, Beat, Tempo, Level, Pulse}
+var Kinds = []Kind{Fader, Lights, Mixer, DMXOut, StageView, AudioIn, Beat, Tempo, Level, Pulse, Player, Button}
 
 // Title is what a module of kind k is called.
 func (k Kind) Title() string {
@@ -110,6 +117,10 @@ func (k Kind) Title() string {
 		return "Level"
 	case Pulse:
 		return "Pulse"
+	case Player:
+		return "Player"
+	case Button:
+		return "Button"
 	}
 	return string(k)
 }
@@ -153,6 +164,100 @@ type Output struct {
 	Host string `json:"host,omitempty"`
 	// Universe is the Art-Net port address, or the sACN universe.
 	Universe int `json:"universe,omitempty"`
+}
+
+// A Song is one song of the playlist: the file it plays, and what its
+// scan found in it.
+type Song struct {
+	ID    string `json:"id"`
+	Path  string `json:"path"`
+	Title string `json:"title"`
+	// BPM, where it is set, is the tempo the song plays its lights at
+	// over the one its scan found, from the first beat it found.
+	BPM float64 `json:"bpm,omitempty"`
+	// Gain is decibels the song plays louder by, over what brings it
+	// to the target loudness.
+	Gain float64 `json:"gain,omitempty"`
+	// Scan is what a scan of the file found, nil before one.
+	Scan *Scan `json:"scan,omitempty"`
+}
+
+// A Scan is what a scan of a song found: how long it is, its beats,
+// and how loud it is.
+type Scan struct {
+	// Length is in seconds.
+	Length float64 `json:"length"`
+	// BPM is the tempo found, and Beats where each beat falls, in
+	// seconds; Downbeat is the beat of Beats the first bar starts on,
+	// of PerBar beats a bar. A song with no beat found has none.
+	BPM      float64   `json:"bpm,omitempty"`
+	Beats    []float64 `json:"beats,omitempty"`
+	Downbeat int       `json:"downbeat,omitempty"`
+	PerBar   int       `json:"perBar,omitempty"`
+	// LUFS is the song's integrated loudness, and Loud false for a
+	// song too short or quiet to measure. TruePeak is its loudest
+	// point, in dBTP.
+	LUFS     float64 `json:"lufs"`
+	Loud     bool    `json:"loud"`
+	TruePeak float64 `json:"truePeak"`
+}
+
+// Target is the loudness each song is brought to, in LUFS, and Ceiling
+// the loudest its true peak may then be, in dBTP.
+const (
+	Target  = -14.0
+	Ceiling = -1.0
+)
+
+// Loudness is how many decibels song g plays louder by: what brings it
+// to the target loudness, no further than keeps its true peak under the
+// ceiling, and the song's own gain on top.
+func (g *Song) Loudness() float64 {
+	var db float64
+	if g.Scan != nil && g.Scan.Loud {
+		db = min(Target-g.Scan.LUFS, Ceiling-g.Scan.TruePeak)
+	}
+	return db + g.Gain
+}
+
+// Clock is the tempo song g plays its lights at, and how many beats
+// into it t seconds are, counted from its first bar: its beats as
+// found, or, where its BPM is set or none were found, a steady beat
+// from the first. Before the first beat the count is less than 0.
+func (g *Song) Clock(t float64) (bpm, beats float64) {
+	var b []float64
+	start := 0
+	if g.Scan != nil {
+		b, start = g.Scan.Beats, g.Scan.Downbeat
+		bpm = g.Scan.BPM
+	}
+	if g.BPM > 0 || len(b) < 2 {
+		if g.BPM > 0 {
+			bpm = g.BPM
+		}
+		if bpm <= 0 {
+			return 0, 0
+		}
+		first := 0.0
+		if len(b) > start {
+			first = b[start]
+		}
+		return bpm, (t - first) * bpm / 60
+	}
+	start = min(start, len(b)-2)
+	// The beat t falls after, and the one after it; before the first
+	// and after the last, the nearest two, the beat going on.
+	i, _ := slices.BinarySearch(b, t)
+	i = min(max(i-1, 0), len(b)-2)
+	return bpm, float64(i-start) + (t-b[i])/(b[i+1]-b[i])
+}
+
+// Song returns song id of the playlist, or nil.
+func (s *Show) Song(id string) *Song {
+	if i := slices.IndexFunc(s.Songs, func(g Song) bool { return g.ID == id }); i >= 0 {
+		return &s.Songs[i]
+	}
+	return nil
 }
 
 // An End is one end of a wire: a module, and a port of it.
@@ -211,6 +316,7 @@ func (s *Show) Clone() Show {
 		c.Modules[i].Lights = slices.Clone(c.Modules[i].Lights)
 	}
 	c.Wires = slices.Clone(s.Wires)
+	c.Songs = slices.Clone(s.Songs)
 	c.Layout = s.Layout.Clone()
 	return c
 }
@@ -263,8 +369,8 @@ func (s *Show) Save(path string) error {
 }
 
 // Mend makes s whole, as one read from a file another build wrote: the
-// stage has a size, wires join modules that are there, and the layout
-// is grouped, its first window kept.
+// stage has a size, wires join modules that are there, and every tab
+// is in the layout.
 func (s *Show) Mend() {
 	if s.Stage.Width <= 0 || s.Stage.Depth <= 0 {
 		s.Stage.Width, s.Stage.Depth = 8, 5
@@ -272,5 +378,13 @@ func (s *Show) Mend() {
 	s.Wires = slices.DeleteFunc(s.Wires, func(w Wire) bool { return s.Module(w.From.Module) == nil || s.Module(w.To.Module) == nil })
 	for i := range s.Modules {
 		s.Modules[i].Lights = slices.DeleteFunc(s.Modules[i].Lights, func(id string) bool { return s.Light(id) == nil })
+	}
+	if s.Layout.Window(0) != nil {
+		// Every tab is somewhere, in the main window where it was not.
+		for _, t := range Tabs {
+			if _, ok := s.Layout.Where(t); !ok {
+				s.Layout.Add(t, dock.Target{Index: -1})
+			}
+		}
 	}
 }

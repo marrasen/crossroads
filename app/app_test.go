@@ -203,3 +203,67 @@ func TestAPulseAndAnAudioInKeepTheirSettings(t *testing.T) {
 		t.Errorf("the Pulse flashes every %v, the Audio in hears %q", named(t, a, "Pulse").Every, named(t, a, "Audio in").Input)
 	}
 }
+
+// TestSongsAddedAreScannedAndKeptInOrder: only songs the player plays
+// are added, each is scanned, and the playlist moves and loses songs
+// as asked.
+func TestSongsAddedAreScannedAndKeptInOrder(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	a.Scan = func(path string) (show.Scan, error) {
+		if path == "bad.mp3" {
+			return show.Scan{}, errors.New("not an MP3")
+		}
+		return show.Scan{Length: 60, BPM: 128}, nil
+	}
+	a.Handle(0, AddSongPaths{Paths: []string{"a.wav", "notes.txt", "bad.mp3", "c.flac"}})
+	songs := a.st.Show.Songs
+	if len(songs) != 3 || songs[0].Title != "a" || songs[2].Title != "c" {
+		t.Fatalf("the playlist is %+v", songs)
+	}
+	for _, g := range songs {
+		if a.st.Songs[g.ID] != Scanning {
+			t.Errorf("%s says %q, not that it is scanned", g.Title, a.st.Songs[g.ID])
+		}
+	}
+	for range 3 {
+		a.scanned((<-a.in).(scanned))
+	}
+	a0, bad, c := a.st.Show.Songs[0], a.st.Show.Songs[1], a.st.Show.Songs[2]
+	if a0.Scan == nil || a0.Scan.BPM != 128 || a.st.Songs[a0.ID] != "" {
+		t.Errorf("a scanned is %+v, saying %q", a0.Scan, a.st.Songs[a0.ID])
+	}
+	if bad.Scan != nil || a.st.Songs[bad.ID] != "not an MP3" {
+		t.Errorf("a song that will not scan says %q", a.st.Songs[bad.ID])
+	}
+	a.Handle(0, MoveSong{Song: c.ID, Before: a0.ID})
+	a.Handle(0, RemoveSong{Song: bad.ID})
+	got := make([]string, 0, len(a.st.Show.Songs))
+	for _, g := range a.st.Show.Songs {
+		got = append(got, g.Title)
+	}
+	if len(got) != 2 || got[0] != "c" || got[1] != "a" {
+		t.Errorf("moved and taken out, the playlist is %v", got)
+	}
+	a.Handle(0, AddSongPaths{Paths: []string{"b.ogg"}, Before: a0.ID})
+	if g := a.st.Show.Songs[1]; g.Title != "b" {
+		t.Errorf("a song added before a is %s", g.Title)
+	}
+}
+
+// TestASongsTempoAndGainAreKeptWithinBounds: a tempo to a tenth of a
+// beat a minute, a gain within MaxGain, and a tempo of 0 sets none.
+func TestASongsTempoAndGainAreKeptWithinBounds(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	a.Scan = func(string) (show.Scan, error) { return show.Scan{}, nil }
+	a.Handle(0, AddSongPaths{Paths: []string{"a.wav"}})
+	id := a.st.Show.Songs[0].ID
+	a.Handle(0, SetSongBPM{Song: id, BPM: 127.04})
+	a.Handle(0, SetSongGain{Song: id, Gain: 40})
+	if g := a.st.Show.Song(id); g.BPM != 127 || g.Gain != MaxGain {
+		t.Errorf("set to 127.04 BPM and 40 dB, the song plays %v BPM and %v dB", g.BPM, g.Gain)
+	}
+	a.Handle(0, SetSongBPM{Song: id, BPM: 0})
+	if g := a.st.Show.Song(id); g.BPM != 0 {
+		t.Errorf("set back to its scan, the song's tempo is %v", g.BPM)
+	}
+}

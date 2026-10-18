@@ -11,6 +11,7 @@ import (
 	"github.com/marrasen/gunim/audio/capture"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/gunimtest"
+	"github.com/marrasen/gunim/icon"
 	"github.com/marrasen/gunim/input"
 )
 
@@ -212,5 +213,84 @@ func TestTheBeatModulesShowTheirBeat(t *testing.T) {
 	}
 	if !tapped {
 		t.Error("the tap button tapped nothing")
+	}
+}
+
+// TestThePlayerTabListsTheSongsAndPlaysOneDoubleClicked: a row for each
+// song with its tempo, the play button turning to pause as a song
+// plays, and the song bar moving the song where it is clicked.
+func TestThePlayerTabListsTheSongsAndPlaysOneDoubleClicked(t *testing.T) {
+	s := show.Start()
+	for i, title := range []string{"Opener", "Closer"} {
+		s.Songs = append(s.Songs, show.Song{ID: s.NewID("song"), Path: title + ".wav", Title: title,
+			Scan: &show.Scan{Length: 200, BPM: 120 + float64(i)*8, LUFS: -12, Loud: true, TruePeak: -1}})
+	}
+	s.Songs[1].BPM = 100
+	s.Layout.Show(show.TabPlayer)
+	w := gunimtest.New(t, geom.Sz(1280, 800), nil)
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: s, Songs: map[string]string{}}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		w.Frame(time.Second / 60)
+	}
+	f := frameOf(t, w)
+	p, ok := f.tabs[show.TabPlayer].(*playlist)
+	if !ok {
+		t.Fatal("no Player tab")
+	}
+	if len(p.list.ids) != 2 || p.list.rows[s.Songs[0].ID].bpm.Value() != 120 || p.list.rows[s.Songs[1].ID].bpm.Value() != 100 {
+		t.Fatal("the rows do not show each song's tempo")
+	}
+	if got := songNote(&s.Songs[0], ""); got != "3:20 · 120.0 BPM found · -12.0 LUFS, plays -2.0 dB" {
+		t.Errorf("the first song's row says %q", got)
+	}
+	ui := frameUI(t, w)
+	r, ok := ui.Bounds(p.list)
+	if !ok {
+		t.Fatal("the songs are not drawn")
+	}
+	at := geom.Pt(r.Min.X+60, r.Min.Y+songH*1.5)
+	w.Input(input.PointerMove{Pos: at})
+	w.Input(input.PointerDown{Pos: at, Button: input.ButtonPrimary, Clicks: 1})
+	w.Input(input.PointerUp{Pos: at, Button: input.ButtonPrimary})
+	w.Input(input.PointerDown{Pos: at, Button: input.ButtonPrimary, Clicks: 2})
+	w.Input(input.PointerUp{Pos: at, Button: input.ButtonPrimary})
+	w.Frame(time.Second / 60)
+	var played string
+	for len(c.Intents()) > 0 {
+		if ps, ok := (<-c.Intents()).Intent.(app.PlaySong); ok {
+			played = ps.Song
+		}
+	}
+	if played != s.Songs[1].ID {
+		t.Errorf("a double click on the second song played %q", played)
+	}
+	live := engine.Live{Playing: engine.Playing{Song: s.Songs[1].ID, Pos: 50 * time.Second, Len: 200 * time.Second, Playing: true}}
+	if err := c.Patch(app.LiveTopic, live); err != nil {
+		t.Fatal(err)
+	}
+	w.Frame(time.Second / 60)
+	if p.play.Icon != icon.Pause {
+		t.Error("playing, the play button does not offer to pause")
+	}
+	pr, _ := ui.Bounds(p)
+	b := p.bar()
+	click := pr.Min.Add(geom.Pt(b.Min.X+b.Size().W*0.75, b.Center().Y))
+	w.Input(input.PointerMove{Pos: click})
+	w.Input(input.PointerDown{Pos: click, Button: input.ButtonPrimary, Clicks: 1})
+	w.Input(input.PointerUp{Pos: click, Button: input.ButtonPrimary})
+	w.Frame(time.Second / 60)
+	var seek time.Duration = -1
+	for len(c.Intents()) > 0 {
+		if sk, ok := (<-c.Intents()).Intent.(app.SeekSong); ok {
+			seek = sk.At
+		}
+	}
+	if seek < 149*time.Second || seek > 151*time.Second {
+		t.Errorf("a click three quarters along the bar moves the song to %v, want 150 s", seek)
 	}
 }

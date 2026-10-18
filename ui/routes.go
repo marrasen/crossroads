@@ -97,7 +97,8 @@ var addGroups = []struct {
 	kinds []show.Kind
 }{
 	{"Light", []show.Kind{show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView}},
-	{"Sound and beat", []show.Kind{show.AudioIn, show.Beat, show.Tempo, show.Level, show.Pulse}},
+	{"Sound and beat", []show.Kind{show.AudioIn, show.Player, show.Beat, show.Tempo, show.Level, show.Pulse}},
+	{"Triggers", []show.Kind{show.Button}},
 }
 
 // kindIcon is the add menu's icon for a module of kind k.
@@ -123,6 +124,10 @@ func kindIcon(k show.Kind) *icon.Icon {
 		return icon.Gauge
 	case show.Pulse:
 		return icon.Zap
+	case show.Player:
+		return icon.Music
+	case show.Button:
+		return icon.CirclePlay
 	}
 	return icon.Plus
 }
@@ -178,7 +183,11 @@ func (r *routes) content(id string) gunim.Node {
 		sg.OnChange = func(i int, _ *gunim.UI) gunim.Intent { return app.SetEvery{Module: id, Every: everys[i]} }
 		r.everys[id] = sg
 		return padded(sg)
-	case show.Lights, show.Mixer, show.StageView, show.Beat, show.Level:
+	case show.Button:
+		b := widget.NewButton("Press")
+		b.OnClick = widget.Sends(app.Press{Module: id})
+		return padded(b)
+	case show.Lights, show.Mixer, show.StageView, show.Beat, show.Level, show.Player:
 	}
 	return nil
 }
@@ -347,6 +356,13 @@ func (r *routes) sync(u *gunim.UI) {
 			n.Glow = float32(r.value(m)) * 0.6
 		case show.Level:
 			n.Glow = float32(r.value(m)) * 0.6
+		case show.Button:
+			n.Body = 36
+			n.Glow = float32(r.value(m)) * 0.8
+		case show.Player:
+			if r.played.Playing.Playing {
+				n.Glow = float32(engine.Flash(r.played.Clocks[m.ID].Beats, 1)) * 0.6
+			}
 		case show.Lights, show.Mixer, show.StageView:
 		}
 		g.Nodes = append(g.Nodes, n)
@@ -367,6 +383,8 @@ func (r *routes) sync(u *gunim.UI) {
 				}
 			case engine.Light, engine.DMX, engine.Audio:
 				gw.Flow = 0.5
+			case engine.Trigger:
+				gw.Thin, gw.Dashed = true, true
 			}
 		}
 		g.Wires = append(g.Wires, gw)
@@ -434,6 +452,20 @@ func (r *routes) detail(m *show.Module) string {
 		return fmt.Sprintf("%.1f BPM", c.BPM)
 	case show.Level:
 		return strconv.Itoa(int(r.value(m)*100+0.5)) + "%"
+	case show.Player:
+		pl := r.played.Playing
+		g := r.st.Show.Song(pl.Song)
+		switch {
+		case pl.Err != "":
+			return pl.Err
+		case g == nil:
+			return strconv.Itoa(len(r.st.Show.Songs)) + " songs"
+		case pl.Playing:
+			return "▶ " + g.Title
+		}
+		return g.Title
+	case show.Button:
+		return "Fires a trigger"
 	case show.Pulse:
 		every := m.Every
 		if every <= 0 {

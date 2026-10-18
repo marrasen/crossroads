@@ -219,7 +219,7 @@ func (e *Engine) sound(m *show.Module, dt float64, live *Live) {
 		}
 		e.values[key] = v
 		live.Values[m.ID] = v
-	case show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView:
+	case show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView, show.Player, show.Button:
 	}
 }
 
