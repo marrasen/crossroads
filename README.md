@@ -66,6 +66,10 @@ Serato DJ Pro's crossfader favours, and **MIDI clock in** follows a
 DAW or a drum machine. **MIDI clock out** sends any clock on to gear
 that only speaks MIDI clock.
 
+A **Timer** counts down to zero, firing as it gets there, or up as a
+stopwatch. A **Pattern** plays one of midittt's light patterns, drawn
+on the beat, locked to the clock while it is held or on.
+
 Tabs drag into any arrangement, and out into windows of their own.
 Ctrl+S saves the show, Ctrl+O opens one. See
 [plans/plan.md](plans/plan.md) for what comes next.

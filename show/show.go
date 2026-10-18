@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/marrasen/crossroads/pattern"
 	"github.com/marrasen/gunim-dmx/fixtures"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/widget/dock"
@@ -30,6 +31,9 @@ type Show struct {
 	Wires   []Wire   `json:"wires"`
 	// Songs are the playlist, in the order it plays.
 	Songs []Song `json:"songs,omitempty"`
+	// Patterns are the light patterns drawn on the beat, which Pattern
+	// modules play.
+	Patterns []pattern.Pattern `json:"patterns,omitempty"`
 	// Layout is where the tabs stood, in which windows.
 	Layout dock.Layout `json:"layout"`
 	// Next counts the IDs made, to make the next one.
@@ -41,6 +45,8 @@ type Show struct {
 type Rig struct {
 	Lights []fixtures.Patch      `json:"lights"`
 	Types  []fixtures.Definition `json:"types,omitempty"`
+	// Groups are sets of the lights, in the order a pattern walks them.
+	Groups []fixtures.Group `json:"groups,omitempty"`
 }
 
 // A Stage is the room the lights hang in, in metres, and where each
@@ -121,12 +127,17 @@ const (
 	ClockIn Kind = "clockin"
 	// ClockOut sends the clock wired into it out as MIDI clock.
 	ClockOut Kind = "clockout"
+	// Timer counts down from a time, or up as a stopwatch.
+	Timer Kind = "timer"
+	// Pattern plays one of the show's patterns, locked to a clock's
+	// beat, while it is held or on.
+	Pattern Kind = "pattern"
 )
 
 // Kinds are the kinds of module, in the order the Routes tab offers
 // them.
 var Kinds = []Kind{Fader, Lights, Mixer, DMXOut, StageView, AudioIn, Beat, Tempo, Level, Pulse, Player, Button,
-	Controller, MIDIOut, Map, Every, Toggle, Look, Chaser, Cues, Link, Serato, ClockIn, ClockOut}
+	Controller, MIDIOut, Map, Every, Toggle, Look, Chaser, Cues, Link, Serato, ClockIn, ClockOut, Timer, Pattern}
 
 // Title is what a module of kind k is called.
 func (k Kind) Title() string {
@@ -179,6 +190,10 @@ func (k Kind) Title() string {
 		return "MIDI clock in"
 	case ClockOut:
 		return "MIDI clock out"
+	case Timer:
+		return "Timer"
+	case Pattern:
+		return "Pattern"
 	}
 	return string(k)
 }
@@ -232,6 +247,12 @@ type Module struct {
 	// Fade is how much of each step a Chaser fades, 0 to 1, and how
 	// many seconds a Cue list takes to fade to a cue.
 	Fade float64 `json:"fade,omitempty"`
+	// Seconds is where a Timer counts down from, and Stopwatch has it
+	// count up instead.
+	Seconds   float64 `json:"seconds,omitempty"`
+	Stopwatch bool    `json:"stopwatch,omitempty"`
+	// Pattern is the pattern a Pattern module plays, by its ID.
+	Pattern string `json:"pattern,omitempty"`
 }
 
 // A ControlKind is what a controller's control is.
@@ -420,6 +441,8 @@ func (s *Show) Clone() Show {
 	c := *s
 	c.Rig.Lights = slices.Clone(s.Rig.Lights)
 	c.Rig.Types = slices.Clone(s.Rig.Types)
+	c.Rig.Groups = slices.Clone(s.Rig.Groups)
+	c.Patterns = slices.Clone(s.Patterns)
 	if s.Stage.Spots != nil {
 		c.Stage.Spots = make(map[string]Spot, len(s.Stage.Spots))
 		for k, v := range s.Stage.Spots {

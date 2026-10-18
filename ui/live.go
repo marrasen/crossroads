@@ -220,6 +220,19 @@ func (l *livePage) build(w float32) (place map[gunim.Node]geom.Rect, height floa
 		case show.Button:
 			triggers = append(triggers, pad{label: m.Name, sub: "press", kind: m.Kind, module: m.ID, lit: v > 0,
 				press: app.Press{Module: m.ID}})
+		case show.Timer:
+			st := l.played.Timers[m.ID]
+			label, cmd := "Start", engine.TimerStart
+			if st.Running {
+				label, cmd = "Pause", engine.TimerPause
+			}
+			triggers = append(triggers,
+				pad{label: label, sub: m.Name + " · " + timeText(st.Shown), kind: m.Kind, module: m.ID, lit: st.Running,
+					press: app.TimerDo{Module: m.ID, Command: cmd}},
+				pad{label: "Reset", sub: m.Name, kind: m.Kind, module: m.ID, press: app.TimerDo{Module: m.ID, Command: engine.TimerReset}})
+		case show.Pattern:
+			looks = append(looks, pad{label: m.Name, sub: "hold to play", kind: m.Kind, module: m.ID, lit: v > 0,
+				press: app.Override{Module: m.ID, Which: "play", On: true}, letGo: app.Override{Module: m.ID, Which: "play"}})
 		case show.Toggle:
 			sub := "off"
 			if v > 0 {
@@ -322,14 +335,14 @@ func padGroup(k show.Kind) string {
 	switch k {
 	case show.Mixer:
 		return "Overrides"
-	case show.Look:
-		return "Looks"
+	case show.Look, show.Pattern:
+		return "Looks and patterns"
 	case show.Cues, show.Chaser:
 		return "Cues and chasers"
 	case show.Fader, show.Lights, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Tempo, show.Level,
-		show.Pulse, show.Player, show.Button, show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle, show.Link, show.Serato, show.ClockIn, show.ClockOut:
+		show.Pulse, show.Player, show.Button, show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle, show.Link, show.Serato, show.ClockIn, show.ClockOut, show.Timer:
 	}
-	return "Buttons and toggles"
+	return "Buttons, toggles and timers"
 }
 
 // Handle implements [gunim.Handler]: a pad pressed asks for what it

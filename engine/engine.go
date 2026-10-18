@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/marrasen/crossroads/controller"
+	"github.com/marrasen/crossroads/pattern"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim-dmx/artnet"
 	"github.com/marrasen/gunim-dmx/dmx"
@@ -133,6 +134,11 @@ func Ports(s *show.Show, m *show.Module) (ins, outs []Port) {
 		return nil, []Port{{"out", "Clock", Clock}}
 	case show.ClockOut:
 		return []Port{{"in", "Clock", Clock}}, nil
+	case show.Timer:
+		return []Port{{"start", "Start", Trigger}, {"pause", "Pause", Trigger}, {"reset", "Reset", Trigger}},
+			[]Port{{"done", "Reaches zero", Trigger}, {"left", "Left", Value}}
+	case show.Pattern:
+		return []Port{{"clock", "Clock", Clock}, {"play", "Play", Value}}, []Port{{"out", "Light", Light}}
 	}
 	return nil, nil
 }
@@ -226,6 +232,8 @@ type Live struct {
 	Owners map[int]string
 	// Log is what happened lately, the latest last.
 	Log []Note
+	// Timers are what each Timer shows, by module.
+	Timers map[string]TimerState
 }
 
 // An Engine runs a show's modules.
@@ -303,6 +311,10 @@ type Engine struct {
 	sync      syncs
 	clockIns  map[string]*clockIn
 	clockOuts map[string]*clockOut
+	// timers are each Timer's state, and patterns the show's patterns,
+	// by ID.
+	timers   map[string]*timer
+	patterns map[string]pattern.Pattern
 }
 
 func (e *Engine) now() time.Time {
@@ -338,7 +350,8 @@ func New(changed func()) *Engine {
 		tempos: map[string]*ownTempo{}, levels: map[string]float64{}, pressed: map[string]bool{}, bar: math.MinInt64,
 		desks: map[string]*desk{}, senders: map[string]*sender{}, everys: map[string]int64{}, toggles: map[string]bool{},
 		steppers: map[string]*stepper{}, held: map[portKey]bool{}, frozen: map[string]dmx.Universe{}, layerOf: map[*mix.Layer]string{},
-		clockIns: map[string]*clockIn{}, clockOuts: map[string]*clockOut{}, sync: syncs{deck: -1}}
+		clockIns: map[string]*clockIn{}, clockOuts: map[string]*clockOut{}, sync: syncs{deck: -1},
+		timers: map[string]*timer{}, patterns: map[string]pattern.Pattern{}}
 }
 
 // Set runs show s from now on: its modules in its wires' order, with a
@@ -362,11 +375,15 @@ func (e *Engine) Set(s show.Show) {
 	}
 	e.home = home
 	e.flashSlots = flashSlotsOf(&e.s, cat)
+	clear(e.patterns)
+	for _, p := range e.s.Patterns {
+		e.patterns[p.ID] = p
+	}
 	keep := map[string]bool{}
 	for _, m := range e.s.Modules {
 		keep[m.ID] = true
 		switch m.Kind {
-		case show.Lights, show.Look, show.Chaser, show.Cues:
+		case show.Lights, show.Look, show.Chaser, show.Cues, show.Pattern:
 			if e.layers[m.ID] == nil {
 				e.layers[m.ID] = mix.NewLayer()
 				e.layerOf[e.layers[m.ID]] = m.ID
@@ -444,6 +461,12 @@ func (e *Engine) Set(s show.Show) {
 			e.clockOuts[m.ID] = co
 		case show.Fader, show.StageView, show.Beat, show.Tempo, show.Level, show.Pulse, show.Player, show.Button,
 			show.Map, show.Every, show.Toggle, show.Link, show.Serato:
+		case show.Timer:
+			// There from the start, to be told what to do before it
+			// first ticks.
+			if e.timers[m.ID] == nil {
+				e.timers[m.ID] = &timer{}
+			}
 		}
 	}
 	for id, l := range e.layers {
@@ -461,6 +484,11 @@ func (e *Engine) Set(s show.Show) {
 	for id := range e.frozen {
 		if !keep[id] {
 			delete(e.frozen, id)
+		}
+	}
+	for id := range e.timers {
+		if !keep[id] {
+			delete(e.timers, id)
 		}
 	}
 	for id := range e.mixers {
@@ -666,7 +694,8 @@ func (e *Engine) Tick() Live {
 	defer e.mu.Unlock()
 	cat := e.s.Catalog()
 	live := Live{Values: map[string]float64{}, Outs: map[string]dmx.State{}, Clocks: map[string]Count{}, Says: map[string]string{},
-		Desks: map[string]Desk{}, Steps: map[string]Stepping{}, Overrides: map[string][3]bool{}}
+		Desks: map[string]Desk{}, Steps: map[string]Stepping{}, Overrides: map[string][3]bool{},
+		Timers: map[string]TimerState{}}
 	stageMixer := e.stageMixer()
 	staged := false
 	now := e.now()
@@ -756,6 +785,10 @@ func (e *Engine) Tick() Live {
 			e.clockedIn(m, now, &live)
 		case show.ClockOut:
 			e.clockedOut(m, now, &live)
+		case show.Timer:
+			e.count(m, now, &live)
+		case show.Pattern:
+			e.playPattern(m, cat, &live)
 		case show.Button:
 			fired := e.pressed[id]
 			e.values[portKey{id, "out"}] = fired
