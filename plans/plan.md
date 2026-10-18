@@ -16,7 +16,13 @@ These belong in the framework, because both apps need them and they aren't about
 1. **`widget/graph`: the Routes view as a general widget.** Today it's about 8,000 lines in Hej DAW!'s `plane*.go`, tied to the song. It splits in two:
    - **The widget:** a neutral model of boxes, typed ports (kind, group, colour), wires, and a "can these two connect?" callback. It also does the painting, zoom, orbs, focus, group rails, replugging and selection.
    - **What stays in Hej DAW!:** the code that turns a song into a graph, plus the song edits.
-2. **`widget/dock`: tabs you can detach, dock and move.** These are now `layout.go`, `dock.go` and `windows.go` in Hej DAW!. Views are already named by plain strings, so this is mostly a move.
+2. **`widget/dock`: tabs you can detach, dock and move, shared by Hej DAW!, Kakel and crossroads.** Today Hej DAW! and Kakel each have their own, written separately:
+   - **Hej DAW!** (`dock.go`, `layout.go`, `windows.go`, about 2,100 lines): splits that hold tabs. Each pane has its own tab strip, a tab dragged to a pane's edge makes a split, and the layout is saved with each song.
+   - **Kakel** (`view/tabbar.go`, 1,286 lines, plus `app/tabs.go` and `app/ownwindows.go`): tabs that hold splits. One tab bar per window sits in the title bar, and each tab is a group of panes. It's the more polished of the two: tabs slide as they move, cut-off titles get a tooltip, it supports screen readers, and it has a + menu.
+
+   One model covers both: a tree where any node is either a split or a group of tabs, nested freely. The package has two halves, matching the app and window split both apps already use:
+   - **The layout:** pure data, owned by the app. It covers moving a tab, docking it at an edge, moving it to another window, closing, tidying up empty groups, and divider positions.
+   - **The widgets:** a tab bar that works in a title bar or over a pane, split dividers, drop targets and the ghost tab. They take Kakel's polish and Hej DAW!'s edge docking.
 3. **`audio/beat`: a live beat tracker.** gunim's `audio/beat` only scans whole files now. The live version would:
    - find onsets (spectral flux, split into kick, snare and hats bands)
    - estimate tempo from the last 4–8 s
@@ -155,7 +161,11 @@ Each step ends in something you can try.
    - Move `dmx`, `fixtures` and the custom light types out of Hej DAW!.
    - Add Open DMX, Art-Net, sACN, `mix` and the Open Fixture Library import.
    - Switch Hej DAW! over and delete its copies.
-3. **gunim widgets.** Extract `widget/dock` and `widget/graph` from Hej DAW!. Hej DAW! must look and behave the same afterwards. This is the riskiest step, so it gets screenshot comparisons before and after.
+3. **gunim widgets.** This is the riskiest step, so every move gets screenshot comparisons before and after.
+   1. Build `widget/dock` in gunim from Hej DAW!'s and Kakel's tab systems.
+   2. Move Hej DAW! onto it, once marrdaw #235 (Hej Tune!) and #243 (Drive menu) are merged: they change `dock.go` and `windows.go`.
+   3. Move Kakel onto it. Kakel is public and has releases, so check its open branches first.
+   4. Extract `widget/graph` (the Routes view) from Hej DAW!.
 4. **crossroads skeleton.** Includes:
    - the module runtime and Routes
    - the Rig, Stage simulator and Faders tabs
@@ -190,3 +200,4 @@ Steps 2 and 3 can run in parallel worktrees. So can 5 and 6, once 4 is done.
 2. **Relicensing.** The `dmx` and `fixtures` code began in GPL midittt. Its author releases it as Apache-2.0 in gunim-dmx, and gunim-dmx's NOTICE says so.
 3. **Music in show files.** The show file refers to the music files. A "Pack for the gig" command copies the show and its music into one folder.
 4. **Hej DAW! moves onto the shared code.** In this order: the lights engine onto gunim-dmx, then the tabs onto `widget/dock`, then the Routes view onto `widget/graph`. Screenshots are compared before and after each.
+5. **Kakel shares the tabs too.** `widget/dock` is built from both Hej DAW!'s and Kakel's tab systems, and Kakel moves onto it after Hej DAW!.
