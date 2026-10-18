@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"math"
 	"strings"
 	"time"
 
+	"github.com/marrasen/crossroads/pattern"
 	"github.com/marrasen/crossroads/routing"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/crossroads/tempo"
@@ -29,11 +31,13 @@ type router struct {
 	fired []routing.Fired
 	fx    fxRunner
 	clock Count
+	// pats are the slots each pattern its routes hold set last tick.
+	pats map[string]map[int]bool
 }
 
 // newRouter makes module m's router, whose routes act on e.
 func (e *Engine) newRouter(m *show.Module) *router {
-	r := &router{layer: mix.NewLayer(), holds: map[string]map[string]bool{}}
+	r := &router{layer: mix.NewLayer(), holds: map[string]map[string]bool{}, pats: map[string]map[int]bool{}}
 	r.eng = routing.NewEngine(e.routeSend, e.routeTimer, func(slot, v int) { r.layer.Set(slot, byte(min(max(v, 0), 255))) },
 		func(program string, velocity int) {
 			if p, ok := e.programs[program]; ok {
@@ -118,6 +122,49 @@ func (r *router) runPattern(action routing.PatternAction, id, key string) bool {
 	return true
 }
 
+// playHeld plays the patterns r's routes hold into its light, as
+// midittt played them: locked to the clock wired in, a channel a pattern
+// no longer sets given back, and a pattern let go giving back its
+// channels, or leaving them, as it says.
+func (e *Engine) playHeld(r *router, cat fixtures.Catalog) {
+	ids := map[string]bool{}
+	for id := range r.holds {
+		ids[id] = true
+	}
+	for id := range r.pats {
+		ids[id] = true
+	}
+	for id := range ids {
+		p, ok := e.patterns[id]
+		on := ok && len(r.holds[id]) > 0 && r.clock.BPM > 0
+		set := map[int]bool{}
+		if on {
+			pos := math.Mod(r.clock.Beats, p.Length())
+			if pos < 0 {
+				pos += p.Length()
+			}
+			for _, w := range pattern.ValuesAt(p, pos, e.s.Rig.Lights, e.s.Rig.Groups, cat) {
+				v := w.Value
+				if fp, found := fixtures.FindPatch(e.s.Rig.Lights, w.FixtureID); found {
+					v = cat.CurveValueAt(fp, w.Offset, v)
+				}
+				r.layer.Set(w.Slot, byte(min(max(v, 0), 255)))
+				set[w.Slot] = true
+			}
+		}
+		for slot := range r.pats[id] {
+			if !set[slot] && (on || !ok || p.Release.Rest) {
+				r.layer.Release(slot)
+			}
+		}
+		if on {
+			r.pats[id] = set
+		} else {
+			delete(r.pats, id)
+		}
+	}
+}
+
 // patternHeld reports whether any MIDI routes module holds pattern id.
 func (e *Engine) patternHeld(id string) bool {
 	for _, r := range e.routers {
@@ -175,6 +222,7 @@ func (e *Engine) route(m *show.Module, cat fixtures.Catalog, now time.Time, live
 		e.note(now, m.Name+": "+names[f.RouteID]+" "+firedText(f))
 	}
 	r.fx.tick(now, r.clock, e.s.Rig.Lights, cat, r.layer)
+	e.playHeld(r, cat)
 	e.values[portKey{m.ID, "out"}] = r.layer
 	e.values[portKey{m.ID, "fired"}] = len(r.fired) > 0
 	if len(r.fired) > 0 {

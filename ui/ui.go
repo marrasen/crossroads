@@ -1,11 +1,12 @@
 // Package ui is crossroads' windows' half: each window is a dock of
 // tabs, Routes, Stage, Faders, Rig, Player, Controllers, Live and
-// Monitor, that the user drags into the
-// arrangement they want, across as many windows as they like. The
-// application's half is package app.
+// Monitor, that the user drags into the arrangement they want, across
+// as many windows as they like. The application's half is package app.
 package ui
 
 import (
+	"strings"
+
 	"github.com/marrasen/crossroads/app"
 	"github.com/marrasen/crossroads/engine"
 	"github.com/marrasen/crossroads/show"
@@ -48,8 +49,8 @@ type frame struct {
 	last     engine.Live
 	named    string
 	// ask is the dialog asking whether to leave a show not saved,
-	// while it shows.
-	ask *widget.Dialog
+	// while it shows, and told the one telling of an import.
+	ask, told *widget.Dialog
 }
 
 func newFrame(win int) *frame {
@@ -59,6 +60,7 @@ func newFrame(win int) *frame {
 		{Label: "New show", Icon: icon.FilePlus, Hint: "Ctrl+N"},
 		{Label: "Open…", Icon: icon.FolderOpen, Hint: "Ctrl+O"},
 		{Label: "Save", Icon: icon.Save, Hint: "Ctrl+S"},
+		{Label: "Import a midittt rig…", Icon: icon.Import},
 	})
 	f.menu.OnPick = func(i int, u *gunim.UI) gunim.Intent {
 		switch i {
@@ -66,6 +68,8 @@ func newFrame(win int) *frame {
 			f.leave(app.New{}, u)
 		case 1:
 			f.leave(app.Open{}, u)
+		case 3:
+			f.leave(app.Import{}, u)
 		default:
 			return app.Save{}
 		}
@@ -137,6 +141,9 @@ func (f *frame) show(s app.State, u *gunim.UI) {
 	f.d.SetLayout(s.Show.Layout, u)
 	for _, t := range f.tabs {
 		t.show(&f.st, u)
+	}
+	if s.Imported != "" && f.win == 0 && f.told == nil && u != nil {
+		f.tell(s, u)
 	}
 	if title := s.Title(); title != f.named {
 		f.named = title
@@ -212,6 +219,27 @@ func (f *frame) CatchKey(e input.Event, u *gunim.UI) bool {
 		return false
 	}
 	return true
+}
+
+// tell tells what of a rig brought over from midittt plays differently,
+// or that all of it plays as it did.
+func (f *frame) tell(s app.State, u *gunim.UI) {
+	d := widget.NewDialog("Brought over from midittt: " + s.Imported)
+	text := "All of it came over: it plays as it did in midittt."
+	if len(s.Notes) > 0 {
+		text = "It plays as it did in midittt, but for these:\n\n• " + strings.Join(s.Notes, "\n• ")
+	}
+	body := widget.NewLabel(text)
+	body.MaxLines = 24
+	d.Body = body
+	d.SetButtons("Got it", "")
+	done := func(*gunim.UI) gunim.Intent {
+		f.told = nil
+		return app.Told{}
+	}
+	d.OnAccept, d.OnDismiss = done, done
+	f.told = d
+	u.Insert(f, d)
 }
 
 // leave asks the application for in, which leaves the show for another:

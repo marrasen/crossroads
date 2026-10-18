@@ -2,6 +2,9 @@ package app
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -333,5 +336,39 @@ func TestATimerAndAPatternKeepTheirSettings(t *testing.T) {
 	a.Handle(0, SetPattern{Module: pt.ID, Pattern: "p2"})
 	if tm, pt := named(t, a, "Timer"), named(t, a, "Pattern"); tm.Seconds != 0 || !tm.Stopwatch || pt.Pattern != "p2" {
 		t.Errorf("set, the timer is %+v and pattern %+v", tm, pt)
+	}
+}
+
+// TestARigIsImportedAndToldOfOnce: a midittt rig opens rebuilt, unsaved,
+// with what plays differently to tell; told, that goes; a rig that
+// cannot be read says why and leaves the show alone.
+func TestARigIsImportedAndToldOfOnce(t *testing.T) {
+	dir := t.TempDir()
+	rig := filepath.Join(dir, "Friday.json")
+	// One route on a song cue, which crossroads does not hear; the tempo
+	// tapped by hand, so nothing goes out on the network.
+	if err := os.WriteFile(rig, []byte(`{"app":"midittt","version":7,"tempoPriority":["manual"],
+		"timers":[{"id":"t","name":"Break","mode":"timer","durationMs":1000}],"fixtures":[],
+		"fixtureGroups":[],"fxPrograms":[],"routes":[{"id":"r","name":"Drop","enabled":true,
+		"input":{"deviceName":"","channel":"any","type":"noteon","data1":"any"},"cue":{"song":"a.mp3","bar":9,"beat":1},
+		"output":{"kind":"timer","timerId":"t","command":"start"}}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := NewApp(show.Start(), "", nil)
+	a.Handle(0, ImportPath{Path: rig})
+	if a.st.Show.Name != "Friday" || !a.st.Unsaved || a.st.Imported != "Friday" || len(a.st.Notes) != 1 {
+		t.Fatalf("imported, the state is %q, unsaved %v, %q, %v", a.st.Show.Name, a.st.Unsaved, a.st.Imported, a.st.Notes)
+	}
+	a.Handle(0, Told{})
+	if a.st.Imported != "" || a.st.Notes != nil {
+		t.Error("told, the import is still to tell")
+	}
+	bad := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(bad, []byte(`{"app":"other"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.Handle(0, ImportPath{Path: bad})
+	if a.st.Show.Name != "Friday" || len(a.st.Notes) != 1 || !strings.Contains(a.st.Notes[0], "could not be read") {
+		t.Errorf("a bad rig left the show %q, saying %v", a.st.Show.Name, a.st.Notes)
 	}
 }

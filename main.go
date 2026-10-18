@@ -1,7 +1,10 @@
 // Command crossroads runs the lights and the music at a gig.
 //
-//	crossroads                  a new show: the Dome on a stage, played by faders
-//	crossroads Gig.crossroads   the show in that file
+//	crossroads                        a new show: the Dome on a stage, played by faders
+//	crossroads Gig.crossroads         the show in that file
+//	crossroads -import rig.json       a midittt rig, rebuilt as a show
+//	crossroads -check-midittt *.json  says, for each midittt rig, whether
+//	                                  it comes over whole, and quits
 //
 // -shot writes the first window to a PNG file once it has drawn, and
 // quits, for looking at the pixels.
@@ -13,12 +16,14 @@ import (
 	"flag"
 	"fmt"
 	"image/png"
+	"io"
 	"log"
 	"os"
 	"os/signal"
 	"time"
 
 	"github.com/marrasen/crossroads/app"
+	"github.com/marrasen/crossroads/midittt"
 	"github.com/marrasen/crossroads/player"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/crossroads/ui"
@@ -30,16 +35,58 @@ import (
 func main() {
 	shot := flag.String("shot", "", "write the first window to this PNG file after -after, and quit")
 	after := flag.Duration("after", 2*time.Second, "how long -shot waits")
+	rig := flag.String("import", "", "open this midittt rig, rebuilt as a show")
+	check := flag.Bool("check-midittt", false, "say whether each midittt rig named comes over whole, and quit")
 	flag.Parse()
+	if *check {
+		if !checkRigs(os.Stdout, flag.Args()) {
+			os.Exit(1)
+		}
+		return
+	}
 	path := flag.Arg(0)
-	if err := run(path, *shot, *after); err != nil {
+	if err := run(path, *rig, *shot, *after); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(path, shot string, after time.Duration) error {
+// checkRigs says, for each midittt rig at paths, whether it comes over
+// whole, and what plays differently where it does not; it reports false
+// where one could not be read.
+func checkRigs(w io.Writer, paths []string) bool {
+	ok := true
+	for _, p := range paths {
+		c, err := midittt.Load(p)
+		if err != nil {
+			_, _ = fmt.Fprintf(w, "%s: could not be read: %v\n", p, err)
+			ok = false
+			continue
+		}
+		r := midittt.Rebuild(c, midittt.NameOf(p))
+		if len(r.Notes) == 0 {
+			_, _ = fmt.Fprintf(w, "%s: comes over whole: %d routes, %d lights\n", p, len(c.Routes), len(c.Fixtures))
+			continue
+		}
+		_, _ = fmt.Fprintf(w, "%s: comes over, but for these:\n", p)
+		for _, n := range r.Notes {
+			_, _ = fmt.Fprintf(w, "  - %s\n", n)
+		}
+	}
+	return ok
+}
+
+func run(path, rig, shot string, after time.Duration) error {
 	s := show.Start()
-	if path != "" {
+	var notes []string
+	switch {
+	case rig != "":
+		c, err := midittt.Load(rig)
+		if err != nil {
+			return err
+		}
+		r := midittt.Rebuild(c, midittt.NameOf(rig))
+		s, notes, path = r.Show, r.Notes, ""
+	case path != "":
 		var err error
 		if s, err = show.Load(path); err != nil {
 			return err
@@ -67,6 +114,9 @@ func run(path, shot string, after time.Duration) error {
 		}
 		ap := app.NewApp(s, path, open)
 		ap.UseDeck(player.NewDeck())
+		if rig != "" {
+			ap.Imported(s.Name, notes)
+		}
 		if shot != "" {
 			go func() {
 				select {
