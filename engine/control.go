@@ -103,9 +103,9 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 	d.events = append(d.events[:0], e.hub.heard[m.Device]...)
 	out, fresh := e.hub.out(m.Device)
 	clear(d.fired)
-	if fresh {
-		// Connected again: each slider takes its value over afresh, as
-		// it may have moved meanwhile.
+	if e.hub.freshIn[m.Device] {
+		// Heard again: each slider takes its value over afresh, as it
+		// may have moved meanwhile.
 		clear(d.caught)
 	}
 	controls := controller.ControlsOf(m)
