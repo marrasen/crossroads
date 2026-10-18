@@ -70,6 +70,11 @@ A **Timer** counts down to zero, firing as it gets there, or up as a
 stopwatch. A **Pattern** plays one of midittt's light patterns, drawn
 on the beat, locked to the clock while it is held or on.
 
+An **Effect** plays one of midittt's effect programmes as it is
+triggered: a short move, timed in milliseconds or beats, scaled by how
+hard the pad was hit. **MIDI routes** plays midittt's routes as they
+were, programmes included.
+
 Tabs drag into any arrangement, and out into windows of their own.
 Ctrl+S saves the show, Ctrl+O opens one. See
 [plans/plan.md](plans/plan.md) for what comes next.

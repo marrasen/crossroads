@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/marrasen/crossroads/fx"
 	"github.com/marrasen/crossroads/pattern"
 	"github.com/marrasen/crossroads/routing"
 	"github.com/marrasen/gunim-dmx/fixtures"
@@ -33,8 +34,10 @@ type Show struct {
 	// Songs are the playlist, in the order it plays.
 	Songs []Song `json:"songs,omitempty"`
 	// Patterns are the light patterns drawn on the beat, which Pattern
-	// modules play.
+	// modules play, and Programs the effect programmes, which Effect
+	// modules and MIDI routes play.
 	Patterns []pattern.Pattern `json:"patterns,omitempty"`
+	Programs []fx.Program      `json:"programs,omitempty"`
 	// Layout is where the tabs stood, in which windows.
 	Layout dock.Layout `json:"layout"`
 	// Next counts the IDs made, to make the next one.
@@ -136,12 +139,15 @@ const (
 	// Routes plays midittt's routes as they were: each MIDI message, or
 	// beat, it hears does what its route says.
 	Routes Kind = "midiroutes"
+	// Effect plays one of the show's effect programmes as it is
+	// triggered: a short move over its lights' channels.
+	Effect Kind = "effect"
 )
 
 // Kinds are the kinds of module, in the order the Routes tab offers
 // them.
 var Kinds = []Kind{Fader, Lights, Mixer, DMXOut, StageView, AudioIn, Beat, Tempo, Level, Pulse, Player, Button,
-	Controller, MIDIOut, Map, Every, Toggle, Look, Chaser, Cues, Link, Serato, ClockIn, ClockOut, Timer, Pattern, Routes}
+	Controller, MIDIOut, Map, Every, Toggle, Look, Chaser, Cues, Link, Serato, ClockIn, ClockOut, Timer, Pattern, Routes, Effect}
 
 // Title is what a module of kind k is called.
 func (k Kind) Title() string {
@@ -200,6 +206,8 @@ func (k Kind) Title() string {
 		return "Pattern"
 	case Routes:
 		return "MIDI routes"
+	case Effect:
+		return "Effect"
 	}
 	return string(k)
 }
@@ -257,8 +265,10 @@ type Module struct {
 	// count up instead.
 	Seconds   float64 `json:"seconds,omitempty"`
 	Stopwatch bool    `json:"stopwatch,omitempty"`
-	// Pattern is the pattern a Pattern module plays, by its ID.
+	// Pattern is the pattern a Pattern module plays, by its ID, and
+	// Program the effect programme an Effect plays.
 	Pattern string `json:"pattern,omitempty"`
+	Program string `json:"program,omitempty"`
 	// Routes are a MIDI routes module's routes, in order.
 	Routes []routing.Route `json:"routes,omitempty"`
 }
@@ -451,6 +461,7 @@ func (s *Show) Clone() Show {
 	c.Rig.Types = slices.Clone(s.Rig.Types)
 	c.Rig.Groups = slices.Clone(s.Rig.Groups)
 	c.Patterns = slices.Clone(s.Patterns)
+	c.Programs = slices.Clone(s.Programs)
 	if s.Stage.Spots != nil {
 		c.Stage.Spots = make(map[string]Spot, len(s.Stage.Spots))
 		for k, v := range s.Stage.Spots {

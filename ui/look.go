@@ -48,7 +48,7 @@ func kindInk(th *theme.Live, k show.Kind) color.NRGBA {
 	switch k {
 	case show.Fader, show.Level, show.Pulse:
 		return valueInk.Get(th)
-	case show.Look, show.Chaser, show.Cues, show.Pattern:
+	case show.Look, show.Chaser, show.Cues, show.Pattern, show.Effect:
 		return lookInk.Get(th)
 	case show.Timer:
 		return trigInk.Get(th)

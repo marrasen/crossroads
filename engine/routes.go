@@ -23,16 +23,22 @@ type router struct {
 	sure     bool
 	linkWas  bool
 	linkSeen bool
-	// fired are the routes that fired this tick, for the log.
+	// fired are the routes that fired this tick, for the log; fx the
+	// effect programmes its routes play, and clock the clock wired in,
+	// as this tick read it.
 	fired []routing.Fired
+	fx    fxRunner
+	clock Count
 }
 
 // newRouter makes module m's router, whose routes act on e.
 func (e *Engine) newRouter(m *show.Module) *router {
 	r := &router{layer: mix.NewLayer(), holds: map[string]map[string]bool{}}
 	r.eng = routing.NewEngine(e.routeSend, e.routeTimer, func(slot, v int) { r.layer.Set(slot, byte(min(max(v, 0), 255))) },
-		func(program string, _ int) {
-			e.note(e.last, "an effect programme "+program+" fired, which crossroads does not play yet")
+		func(program string, velocity int) {
+			if p, ok := e.programs[program]; ok {
+				r.fx.trigger(p, velocity, e.last, r.clock)
+			}
 		})
 	r.eng.SetRunPattern(func(action routing.PatternAction, id, key string) bool { return r.runPattern(action, id, key) })
 	r.eng.SetRunLink(e.routeLink)
@@ -132,6 +138,7 @@ func (e *Engine) route(m *show.Module, cat fixtures.Catalog, now time.Time, live
 	}
 	r.eng.SetCatalog(cat)
 	r.fired = r.fired[:0]
+	r.clock, _ = e.input(m.ID, "clock").(Count)
 	for device, heard := range e.hub.heard {
 		for _, ev := range heard {
 			msg, ok := routing.Parse(ev.AppendTo(nil))
@@ -167,6 +174,7 @@ func (e *Engine) route(m *show.Module, cat fixtures.Catalog, now time.Time, live
 	for _, f := range r.fired {
 		e.note(now, m.Name+": "+names[f.RouteID]+" "+firedText(f))
 	}
+	r.fx.tick(now, r.clock, e.s.Rig.Lights, cat, r.layer)
 	e.values[portKey{m.ID, "out"}] = r.layer
 	e.values[portKey{m.ID, "fired"}] = len(r.fired) > 0
 	if len(r.fired) > 0 {

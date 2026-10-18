@@ -195,6 +195,11 @@ type (
 	}
 	// SetPattern has Pattern Module play the show's pattern Pattern.
 	SetPattern struct{ Module, Pattern string }
+	// SetProgram has Effect Module play the show's effect programme
+	// Program.
+	SetProgram struct{ Module, Program string }
+	// FireEffect fires Effect Module.
+	FireEffect struct{ Module string }
 	// SetRouteOn turns MIDI routes Module's route Route on or off.
 	SetRouteOn struct {
 		Module, Route string
@@ -457,6 +462,10 @@ func (a *App) Handle(win int, in gunim.Intent) {
 			if len(s.Patterns) > 0 {
 				m.Pattern = s.Patterns[0].ID
 			}
+		case show.Effect:
+			if len(s.Programs) > 0 {
+				m.Program = s.Programs[0].ID
+			}
 		default:
 		}
 		s.Modules = append(s.Modules, m)
@@ -628,6 +637,13 @@ func (a *App) Handle(win int, in gunim.Intent) {
 		if m := s.Module(in.Module); m != nil {
 			m.Pattern = in.Pattern
 		}
+	case SetProgram:
+		if m := s.Module(in.Module); m != nil {
+			m.Program = in.Program
+		}
+	case FireEffect:
+		a.eng.FireEffect(in.Module)
+		return
 	case SetRouteOn:
 		if m := s.Module(in.Module); m != nil {
 			for i := range m.Routes {
