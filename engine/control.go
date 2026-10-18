@@ -486,7 +486,7 @@ func (e *Engine) logic(m *show.Module, live *Live) {
 		e.values[key] = v
 		live.Values[m.ID] = v
 	case show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Tempo,
-		show.Level, show.Pulse, show.Player, show.Button, show.Controller, show.MIDIOut, show.Look, show.Chaser, show.Cues, show.Link, show.Serato, show.ClockIn, show.ClockOut:
+		show.Level, show.Pulse, show.Player, show.Button, show.Controller, show.MIDIOut, show.Look, show.Chaser, show.Cues, show.Link, show.Serato, show.ClockIn, show.ClockOut, show.Timer, show.Pattern:
 	}
 }
 

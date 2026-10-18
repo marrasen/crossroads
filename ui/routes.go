@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/marrasen/crossroads/app"
 	"github.com/marrasen/crossroads/engine"
@@ -43,9 +44,13 @@ type routes struct {
 	maps    map[string]*mapFields
 	// levels are each Look's sliders, by role; fades each Chaser's
 	// fade, and cueFades each Cue list's.
-	levels   map[string]map[string]*widget.Slider
-	fades    map[string]*widget.Slider
-	cueFades map[string]*widget.NumberField
+	levels map[string]map[string]*widget.Slider
+	// timers are each Timer's fields, and patternLists each Pattern's
+	// list of patterns.
+	timers       map[string]*timerFields
+	patternLists map[string]*widget.Dropdown
+	fades        map[string]*widget.Slider
+	cueFades     map[string]*widget.NumberField
 	// heard are the sound card's inputs, listed once, as an Audio in
 	// first asks.
 	heard  []capture.Device
@@ -69,7 +74,8 @@ func newRoutes() *routes {
 	r := &routes{view: graph.NewView(), faders: map[string]*widget.Slider{}, devices: map[string]*widget.Dropdown{},
 		inputs: map[string]*widget.Dropdown{}, taps: map[string]*widget.Button{}, bpms: map[string]*widget.NumberField{}, follows: map[string]*widget.Checkbox{},
 		everys: map[string]*widget.Segmented{}, maps: map[string]*mapFields{}, levels: map[string]map[string]*widget.Slider{},
-		fades: map[string]*widget.Slider{}, cueFades: map[string]*widget.NumberField{}, ports: map[string][2][]engine.Port{}}
+		fades: map[string]*widget.Slider{}, cueFades: map[string]*widget.NumberField{},
+		timers: map[string]*timerFields{}, patternLists: map[string]*widget.Dropdown{}, ports: map[string][2][]engine.Port{}}
 	r.view.Content = r.content
 	r.view.Accepts = func(from, to graph.End) (bool, string) {
 		if r.st == nil {
@@ -106,9 +112,9 @@ var addGroups = []struct {
 }{
 	{"Light", []show.Kind{show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView}},
 	{"Sound and beat", []show.Kind{show.AudioIn, show.Player, show.Beat, show.Tempo, show.Level, show.Pulse}},
-	{"Looks", []show.Kind{show.Look, show.Chaser, show.Cues}},
+	{"Looks", []show.Kind{show.Look, show.Chaser, show.Cues, show.Pattern}},
 	{"Sync", []show.Kind{show.Link, show.Serato, show.ClockIn, show.ClockOut}},
-	{"Controllers and logic", []show.Kind{show.Button, show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle}},
+	{"Controllers and logic", []show.Kind{show.Timer, show.Button, show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle}},
 }
 
 // kindIcon is the add menu's icon for a module of kind k.
@@ -154,6 +160,10 @@ func kindIcon(k show.Kind) *icon.Icon {
 		return icon.Repeat2
 	case show.Cues:
 		return icon.ListOrdered
+	case show.Timer:
+		return icon.Timer
+	case show.Pattern:
+		return icon.Rows3
 	case show.Link:
 		return icon.Link
 	case show.Serato:
@@ -229,6 +239,10 @@ func (r *routes) content(id string) gunim.Node {
 		return r.mapContent(m)
 	case show.Look:
 		return r.lookContent(m)
+	case show.Timer:
+		return r.timerContent(m)
+	case show.Pattern:
+		return r.patternContent(m)
 	case show.Chaser:
 		sg := widget.NewSegmented(beatNames...)
 		sg.SetSelected(beatIndex(m.Every), nil)
@@ -249,6 +263,76 @@ func (r *routes) content(id string) gunim.Node {
 	case show.Lights, show.Mixer, show.StageView, show.Beat, show.Level, show.Player, show.Controller, show.MIDIOut, show.Toggle, show.Link, show.Serato, show.ClockIn, show.ClockOut:
 	}
 	return nil
+}
+
+// timerContent is a Timer's box: whether it counts down or up, and
+// from how long.
+func (r *routes) timerContent(m *show.Module) gunim.Node {
+	id := m.ID
+	mode := widget.NewSegmented("Countdown", "Stopwatch")
+	secs := widget.NewNumberField(0, 24*60*60)
+	secs.Suffix, secs.Increment = " s", 10
+	send := func() gunim.Intent {
+		return app.SetTimer{Module: id, Seconds: secs.Value(), Stopwatch: mode.Selected() == 1}
+	}
+	mode.OnChange = func(int, *gunim.UI) gunim.Intent { return send() }
+	secs.OnCommit = func(float64, *gunim.UI) gunim.Intent { return send() }
+	r.timers[id] = &timerFields{mode: mode, secs: secs}
+	r.timers[id].set(m, nil)
+	return padded(widget.NewWrap(widget.NewSized(mode, lookRowW, 30), widget.NewSized(secs, 120, 30)))
+}
+
+// timerFields are a Timer box's fields.
+type timerFields struct {
+	mode *widget.Segmented
+	secs *widget.NumberField
+}
+
+// set shows module m's timer, but in a field being typed.
+func (f *timerFields) set(m *show.Module, u *gunim.UI) {
+	sel := 0
+	if m.Stopwatch {
+		sel = 1
+	}
+	f.mode.SetSelected(sel, u)
+	if u == nil || !u.HasFocus(f.secs) {
+		f.secs.SetValue(m.Seconds, u)
+	}
+}
+
+// patternContent is a Pattern's box: the pattern it plays, of the
+// show's.
+func (r *routes) patternContent(m *show.Module) gunim.Node {
+	id := m.ID
+	d := widget.NewDropdown(nil)
+	d.OnChange = func(i int, _ *gunim.UI) gunim.Intent {
+		ps := r.st.Show.Patterns
+		if i < 0 || i >= len(ps) {
+			return nil
+		}
+		return app.SetPattern{Module: id, Pattern: ps[i].ID}
+	}
+	r.patternLists[id] = d
+	r.followPatterns(d, m, nil)
+	return padded(d)
+}
+
+// followPatterns offers the show's patterns in d, m's chosen.
+func (r *routes) followPatterns(d *widget.Dropdown, m *show.Module, u *gunim.UI) {
+	ps := r.st.Show.Patterns
+	names := make([]string, len(ps))
+	at := -1
+	for i, p := range ps {
+		names[i] = p.DisplayName()
+		if p.ID == m.Pattern {
+			at = i
+		}
+	}
+	if len(names) == 0 {
+		names = []string{"No patterns yet"}
+	}
+	d.SetItems(widget.Labels(names...))
+	d.SetSelected(at, u)
 }
 
 // lookRowW is how wide a row of a Look's or a Chaser's box is.
@@ -473,6 +557,14 @@ func (r *routes) show(s *app.State, u *gunim.UI) {
 			sl.SetValue(float32(s.Show.Module(id).Fade), u)
 		}
 	}
+	maps.DeleteFunc(r.timers, func(id string, _ *timerFields) bool { return s.Show.Module(id) == nil })
+	for id, f := range r.timers {
+		f.set(s.Show.Module(id), u)
+	}
+	maps.DeleteFunc(r.patternLists, func(id string, _ *widget.Dropdown) bool { return s.Show.Module(id) == nil })
+	for id, d := range r.patternLists {
+		r.followPatterns(d, s.Show.Module(id), u)
+	}
 	maps.DeleteFunc(r.cueFades, func(id string, _ *widget.NumberField) bool { return s.Show.Module(id) == nil })
 	for id, f := range r.cueFades {
 		if u == nil || !u.HasFocus(f) {
@@ -557,6 +649,11 @@ func (r *routes) sync(u *gunim.UI) {
 			n.Body, n.Width = 70, 260
 		case show.Cues:
 			n.Body, n.Width = 40, 220
+		case show.Timer:
+			n.Body, n.Width = 76, 260
+		case show.Pattern:
+			n.Body, n.Width = 40, 220
+			n.Glow = float32(r.value(m)) * 0.6
 		case show.Controller, show.MIDIOut:
 		case show.Player:
 			if r.played.Playing.Playing {
@@ -696,6 +793,26 @@ func (r *routes) detail(m *show.Module) string {
 			return "On"
 		}
 		return "Off"
+	case show.Timer:
+		st := r.played.Timers[m.ID]
+		text := timeText(st.Shown)
+		switch {
+		case st.Finished:
+			text += ", over"
+		case st.Running:
+			text += ", running"
+		}
+		return text
+	case show.Pattern:
+		for _, p := range r.st.Show.Patterns {
+			if p.ID == m.Pattern {
+				if r.value(m) > 0 {
+					return "▶ " + p.DisplayName()
+				}
+				return p.DisplayName()
+			}
+		}
+		return "No pattern chosen"
 	case show.Look:
 		return strconv.Itoa(int(r.value(m)*100+0.5)) + "% up"
 	case show.Chaser, show.Cues:
@@ -773,4 +890,14 @@ func (r *routes) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids guni
 	for k := range kids.All {
 		k.Paint(p)
 	}
+}
+
+// timeText writes d as minutes and seconds, and a minus before it
+// where it is below zero.
+func timeText(d time.Duration) string {
+	sign := ""
+	if d < 0 {
+		sign, d = "−", -d
+	}
+	return sign + clock(d)
 }

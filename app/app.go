@@ -181,6 +181,20 @@ type (
 	}
 	// Flip flips Toggle Module.
 	Flip struct{ Module string }
+	// SetTimer has Timer Module count down from Seconds, or up as a
+	// stopwatch.
+	SetTimer struct {
+		Module    string
+		Seconds   float64
+		Stopwatch bool
+	}
+	// TimerDo tells Timer Module to start, pause or reset.
+	TimerDo struct {
+		Module  string
+		Command engine.TimerCommand
+	}
+	// SetPattern has Pattern Module play the show's pattern Pattern.
+	SetPattern struct{ Module, Pattern string }
 	// Step moves Chaser or Cue list Module on a step, or back with By
 	// -1.
 	Step struct {
@@ -432,6 +446,12 @@ func (a *App) Handle(win int, in gunim.Intent) {
 			m.Every, m.Fade = 1, 0.5
 		case show.Cues:
 			m.Fade = 2
+		case show.Timer:
+			m.Seconds = 300
+		case show.Pattern:
+			if len(s.Patterns) > 0 {
+				m.Pattern = s.Patterns[0].ID
+			}
 		case show.Fader, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Level, show.Player, show.Button,
 			show.MIDIOut, show.Toggle, show.Link, show.Serato, show.ClockIn, show.ClockOut:
 		}
@@ -593,6 +613,17 @@ func (a *App) Handle(win int, in gunim.Intent) {
 	case Flip:
 		a.eng.Flip(in.Module)
 		return
+	case SetTimer:
+		if m := s.Module(in.Module); m != nil {
+			m.Seconds, m.Stopwatch = max(in.Seconds, 0), in.Stopwatch
+		}
+	case TimerDo:
+		a.eng.TimerDo(in.Module, in.Command)
+		return
+	case SetPattern:
+		if m := s.Module(in.Module); m != nil {
+			m.Pattern = in.Pattern
+		}
 	case Step:
 		a.eng.Step(in.Module, in.By)
 		return

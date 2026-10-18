@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/marrasen/crossroads/engine"
+	"github.com/marrasen/crossroads/pattern"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/widget/dock"
@@ -313,5 +314,24 @@ func TestALookIsAddedWarmAndItsLevelsChange(t *testing.T) {
 	a.Handle(0, SetFade{Module: c.ID, Fade: 3})
 	if c := named(t, a, "Chaser"); c.Fade != 1 {
 		t.Errorf("a chaser's fade set to 3 is %v", c.Fade)
+	}
+}
+
+// TestATimerAndAPatternKeepTheirSettings: a new timer counts down five
+// minutes, set as asked; a new pattern plays the show's first.
+func TestATimerAndAPatternKeepTheirSettings(t *testing.T) {
+	s := show.Start()
+	s.Patterns = []pattern.Pattern{{ID: "p1", Name: "Chase"}, {ID: "p2", Name: "Wash"}}
+	a := NewApp(s, "", nil)
+	a.Handle(0, AddModule{Kind: show.Timer})
+	a.Handle(0, AddModule{Kind: show.Pattern})
+	tm, pt := named(t, a, "Timer"), named(t, a, "Pattern")
+	if tm.Seconds != 300 || tm.Stopwatch || pt.Pattern != "p1" {
+		t.Fatalf("a new timer is %+v and pattern %+v", tm, pt)
+	}
+	a.Handle(0, SetTimer{Module: tm.ID, Seconds: -5, Stopwatch: true})
+	a.Handle(0, SetPattern{Module: pt.ID, Pattern: "p2"})
+	if tm, pt := named(t, a, "Timer"), named(t, a, "Pattern"); tm.Seconds != 0 || !tm.Stopwatch || pt.Pattern != "p2" {
+		t.Errorf("set, the timer is %+v and pattern %+v", tm, pt)
 	}
 }

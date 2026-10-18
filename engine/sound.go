@@ -225,7 +225,7 @@ func (e *Engine) sound(m *show.Module, dt float64, live *Live) {
 		e.values[key] = v
 		live.Values[m.ID] = v
 	case show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView, show.Player, show.Button,
-		show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle, show.Look, show.Chaser, show.Cues, show.Link, show.Serato, show.ClockIn, show.ClockOut:
+		show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle, show.Look, show.Chaser, show.Cues, show.Link, show.Serato, show.ClockIn, show.ClockOut, show.Timer, show.Pattern:
 	}
 }
 
