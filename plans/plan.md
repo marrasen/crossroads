@@ -184,9 +184,9 @@ Each step ends in something you can try.
 
 Steps 2 and 3 can run in parallel worktrees. So can 5 and 6, once 4 is done.
 
-## 7. Open questions
+## 7. Decisions (2026-10-18)
 
-1. **crossroads licence and visibility.** midittt is GPL-3.0, and its Ableton Link code is derived from Ableton's GPL library. If crossroads keeps that code, crossroads must be GPL-3.0 too. Recommendation: crossroads public under GPL-3.0, gunim-dmx Apache-2.0.
-2. **Relicensing.** The `dmx` and `fixtures` code began in GPL midittt. You wrote it, so you can release it as Apache-2.0 in gunim-dmx. That needs your explicit OK, and a note in the repo.
-3. **Music in show files.** Hej DAW! songs embed everything. A gig playlist can be gigabytes. Option A: the show file refers to music files, and a "Pack for the gig" command copies show plus music into one folder. Option B: embed everything, as Hej DAW! does.
-4. **Hej DAW! on the shared code.** Recommendation: yes, move Hej DAW! onto gunim-dmx, `widget/graph` and `widget/dock`, so there is one copy of each.
+1. **Licences.** crossroads is public under GPL-3.0, because it carries midittt's Ableton Link code, which is derived from Ableton's GPL library. gunim-dmx is public under Apache-2.0, to match gunim.
+2. **Relicensing.** The `dmx` and `fixtures` code began in GPL midittt. Its author releases it as Apache-2.0 in gunim-dmx, and gunim-dmx's NOTICE says so.
+3. **Music in show files.** The show file refers to the music files. A "Pack for the gig" command copies the show and its music into one folder.
+4. **Hej DAW! moves onto the shared code.** In this order: the lights engine onto gunim-dmx, then the tabs onto `widget/dock`, then the Routes view onto `widget/graph`. Screenshots are compared before and after each.
