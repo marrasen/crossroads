@@ -81,12 +81,20 @@ func Start() Show {
 		Wire{ID: s.NewID("w"), From: End{mixer.ID, "out"}, To: End{out.ID, "in"}},
 		Wire{ID: s.NewID("w"), From: End{mixer.ID, "out"}, To: End{view.ID, "in"}},
 	)
-	s.Layout = dock.NewLayout(true, TabRoutes, TabRig, TabMIDI, TabWatch, TabStage, TabFaders, TabPlayer, TabLive)
-	s.Layout.Move(TabStage, dock.Target{Side: dock.Right})
-	s.Layout.Move(TabFaders, dock.Target{At: TabStage, Side: dock.Bottom})
-	s.Layout.Move(TabPlayer, dock.Target{At: TabFaders, Index: -1})
-	s.Layout.Move(TabLive, dock.Target{At: TabFaders, Index: -1})
-	s.Layout.Show(TabFaders)
-	s.Layout.Show(TabRoutes)
+	s.Layout = DefaultLayout()
 	return s
+}
+
+// DefaultLayout is the layout a new show opens with: Routes, Rig,
+// Controllers and Monitor on the left, the Stage over the Faders,
+// Player and Live on the right, Routes and Faders in front.
+func DefaultLayout() dock.Layout {
+	l := dock.NewLayout(true, TabRoutes, TabRig, TabMIDI, TabWatch, TabStage, TabFaders, TabPlayer, TabLive)
+	l.Move(TabStage, dock.Target{Side: dock.Right})
+	l.Move(TabFaders, dock.Target{At: TabStage, Side: dock.Bottom})
+	l.Move(TabPlayer, dock.Target{At: TabFaders, Index: -1})
+	l.Move(TabLive, dock.Target{At: TabFaders, Index: -1})
+	l.Show(TabFaders)
+	l.Show(TabRoutes)
+	return l
 }

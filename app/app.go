@@ -16,6 +16,7 @@ import (
 
 	"github.com/marrasen/crossroads/controller"
 	"github.com/marrasen/crossroads/engine"
+	"github.com/marrasen/crossroads/midittt"
 	"github.com/marrasen/crossroads/player"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
@@ -43,6 +44,10 @@ type State struct {
 	// Songs say, by song, what is wrong with one: "Scanning…" while it
 	// is scanned, or why it could not be read.
 	Songs map[string]string
+	// Imported says the show was brought over from midittt, and Notes
+	// what of it plays differently, for the windows to tell, once.
+	Imported string
+	Notes    []string
 }
 
 // Title is the windows' title.
@@ -221,6 +226,12 @@ type (
 	Save struct{}
 	// Open asks for a show file and opens it.
 	Open struct{}
+	// Import asks for a midittt rig and opens it, rebuilt as a show.
+	Import struct{}
+	// ImportPath opens the midittt rig at Path, rebuilt as a show.
+	ImportPath struct{ Path string }
+	// Told says the windows told of the import.
+	Told struct{}
 	// New starts a new show.
 	New struct{}
 )
@@ -264,6 +275,7 @@ type (
 	savePath  string
 	openPath  string
 	songPaths []string
+	rigPath   string
 )
 
 // scanned is what a scan of song found in the file at path, coming
@@ -299,6 +311,13 @@ func NewApp(s show.Show, path string, open Opener) *App {
 	})
 	a.eng.Set(a.st.Show)
 	return a
+}
+
+// Imported says the show was brought over from midittt as name, and
+// what of it plays differently, for the windows to tell. Call it before
+// Run.
+func (a *App) Imported(name string, notes []string) {
+	a.st.Unsaved, a.st.Imported, a.st.Notes = true, name, notes
 }
 
 // UseDeck has the playlist play through d, which the application
@@ -350,6 +369,9 @@ func (a *App) Run(ctx context.Context) error {
 				continue
 			case songPaths:
 				a.Handle(0, AddSongPaths{Paths: m})
+				continue
+			case rigPath:
+				a.Handle(0, ImportPath{Path: string(m)})
 				continue
 			case scanned:
 				a.scanned(m)
@@ -665,6 +687,25 @@ func (a *App) Handle(win int, in gunim.Intent) {
 	case Open:
 		a.openShow(win)
 		return
+	case Import:
+		a.chooseRig(win)
+		return
+	case ImportPath:
+		c, err := midittt.Load(in.Path)
+		if err != nil {
+			a.st.Imported, a.st.Notes = midittt.NameOf(in.Path), []string{"It could not be read: " + err.Error()}
+			a.publish()
+			return
+		}
+		r := midittt.Rebuild(c, midittt.NameOf(in.Path))
+		a.replace(r.Show, "")
+		a.st.Unsaved, a.st.Imported, a.st.Notes = true, r.Show.Name, r.Notes
+		a.publish()
+		return
+	case Told:
+		a.st.Imported, a.st.Notes = "", nil
+		a.publish()
+		return
 	case New:
 		a.replace(show.Start(), "")
 		return
@@ -784,6 +825,21 @@ func (a *App) scanned(m scanned) {
 	sc := m.scan
 	s.Song(m.song).Scan = &sc
 	a.setShow(s)
+}
+
+// chooseRig asks in window win for a midittt rig to bring over.
+func (a *App) chooseRig(win int) {
+	w := a.wins[win]
+	if w == nil {
+		return
+	}
+	go func() {
+		paths, err := w.c.ChooseFiles(context.Background(), driver.ChooseOptions{Title: "Import a midittt rig",
+			Filters: []driver.FileFilter{{Name: "midittt rigs", Patterns: []string{"*.json"}}}})
+		if err == nil && len(paths) > 0 {
+			a.in <- rigPath(paths[0])
+		}
+	}()
 }
 
 // chooseSongs asks in window win for songs to add.

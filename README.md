@@ -83,6 +83,23 @@ Ctrl+S saves the show, Ctrl+O opens one. See
 go run github.com/marrasen/crossroads@latest
 ```
 
+## Moving from midittt
+
+**Show → Import a midittt rig…** opens a midittt rig, rebuilt as a
+show: its lights, their types and groups, its patterns, effect
+programmes and timers, its tempo sources and MIDI clock, and all its
+routes in one MIDI routes module, which plays them as midittt did. A
+dialog then says what, if anything, plays differently.
+
+To check every rig at once, without opening them:
+
+```sh
+crossroads -check-midittt rigs/*.json
+```
+
+Each rig is said to come over whole, or what of it plays differently:
+a route on a song cue, say, which crossroads does not hear.
+
 ## Licence
 
 GPL-3.0-or-later. See [LICENSE](LICENSE). crossroads carries code from
