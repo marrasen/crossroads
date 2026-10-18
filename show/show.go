@@ -112,12 +112,21 @@ const (
 	// Cues is a cue list: the light wired into it, one cue at a time,
 	// each faded to as GO is pressed.
 	Cues Kind = "cues"
+	// Link is the Ableton Link session on the network, as a clock.
+	Link Kind = "link"
+	// Serato is Serato DJ Pro's deck the crossfader favours, as a
+	// clock.
+	Serato Kind = "serato"
+	// ClockIn is the MIDI clock coming in on a MIDI port, as a clock.
+	ClockIn Kind = "clockin"
+	// ClockOut sends the clock wired into it out as MIDI clock.
+	ClockOut Kind = "clockout"
 )
 
 // Kinds are the kinds of module, in the order the Routes tab offers
 // them.
 var Kinds = []Kind{Fader, Lights, Mixer, DMXOut, StageView, AudioIn, Beat, Tempo, Level, Pulse, Player, Button,
-	Controller, MIDIOut, Map, Every, Toggle, Look, Chaser, Cues}
+	Controller, MIDIOut, Map, Every, Toggle, Look, Chaser, Cues, Link, Serato, ClockIn, ClockOut}
 
 // Title is what a module of kind k is called.
 func (k Kind) Title() string {
@@ -162,6 +171,14 @@ func (k Kind) Title() string {
 		return "Chaser"
 	case Cues:
 		return "Cue list"
+	case Link:
+		return "Ableton Link"
+	case Serato:
+		return "Serato"
+	case ClockIn:
+		return "MIDI clock in"
+	case ClockOut:
+		return "MIDI clock out"
 	}
 	return string(k)
 }
@@ -191,8 +208,8 @@ type Module struct {
 	// Every is how many beats a Pulse flashes, or an Every fires,
 	// every, 1 where it is 0.
 	Every float64 `json:"every,omitempty"`
-	// Device is the MIDI port a Controller listens to and lights, or a
-	// MIDI out sends to, by its name.
+	// Device is the MIDI port a Controller or a MIDI clock in listens
+	// to, or a MIDI out or a MIDI clock out sends to, by its name.
 	Device string `json:"device,omitempty"`
 	// Layout is a Controller's built-in layout, by its ID, and Controls
 	// the controls it learned, where it has none.

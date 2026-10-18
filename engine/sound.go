@@ -120,8 +120,8 @@ func (a *ear) hear() (heard Sound, says string) {
 	return Sound{Rate: info.Rate, Frames: a.heard}, info.Name
 }
 
-// tempo is a Tempo module's own clock, and the taps that set it.
-type tempo struct {
+// ownTempo is a Tempo module's own clock, and the taps that set it.
+type ownTempo struct {
 	beats float64
 	taps  []time.Time
 	// played is what it counted last tick.
@@ -183,7 +183,7 @@ func (e *Engine) sound(m *show.Module, dt float64, live *Live) {
 	case show.Tempo:
 		t := e.tempos[m.ID]
 		if t == nil {
-			t = &tempo{}
+			t = &ownTempo{}
 			e.tempos[m.ID] = t
 		}
 		c, ok := e.input(m.ID, "in").(Count)
@@ -225,7 +225,7 @@ func (e *Engine) sound(m *show.Module, dt float64, live *Live) {
 		e.values[key] = v
 		live.Values[m.ID] = v
 	case show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView, show.Player, show.Button,
-		show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle, show.Look, show.Chaser, show.Cues:
+		show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle, show.Look, show.Chaser, show.Cues, show.Link, show.Serato, show.ClockIn, show.ClockOut:
 	}
 }
 
@@ -269,7 +269,7 @@ func (e *Engine) Tap(module string) (float64, bool) {
 	defer e.mu.Unlock()
 	t := e.tempos[module]
 	if t == nil {
-		t = &tempo{}
+		t = &ownTempo{}
 		e.tempos[module] = t
 	}
 	now := e.now()

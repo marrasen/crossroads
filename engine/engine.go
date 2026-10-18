@@ -129,6 +129,10 @@ func Ports(s *show.Show, m *show.Module) (ins, outs []Port) {
 		return append(stepPorts(m.Kind), Port{"next", "Next step", Trigger}, Port{"clock", "Clock", Clock}), []Port{{"out", "Light", Light}}
 	case show.Cues:
 		return append(stepPorts(m.Kind), Port{"go", "GO", Trigger}, Port{"back", "Back", Trigger}), []Port{{"out", "Light", Light}}
+	case show.Link, show.Serato, show.ClockIn:
+		return nil, []Port{{"out", "Clock", Clock}}
+	case show.ClockOut:
+		return []Port{{"in", "Clock", Clock}}, nil
 	}
 	return nil, nil
 }
@@ -242,7 +246,7 @@ type Engine struct {
 	// tempos the Tempos' own clocks and levels the Levels', by module.
 	ears   map[string]*ear
 	follow map[string]*follower
-	tempos map[string]*tempo
+	tempos map[string]*ownTempo
 	levels map[string]float64
 	// last is when the last tick ran.
 	last time.Time
@@ -289,6 +293,16 @@ type Engine struct {
 	// MIDI opens the MIDI ports, the system's where it is nil. Set it
 	// before the first Set.
 	MIDI MIDIPorts
+	// Link and Serato make the Ableton Link session and Serato's feed,
+	// package link's and package serato's where they are nil. Set them
+	// before the first Set.
+	Link   func() Linker
+	Serato func() SeratoFeed
+	// sync holds the Link session and Serato's feed, and clockIns and
+	// clockOuts each MIDI clock in's and out's port.
+	sync      syncs
+	clockIns  map[string]*clockIn
+	clockOuts map[string]*clockOut
 }
 
 func (e *Engine) now() time.Time {
@@ -321,9 +335,10 @@ type portKey struct {
 func New(changed func()) *Engine {
 	return &Engine{layers: map[string]*mix.Layer{}, mixers: map[string]*mix.Mixer{}, heard: map[string][]*mix.Layer{}, outs: map[string]*out{},
 		values: map[portKey]any{}, changed: changed, ears: map[string]*ear{}, follow: map[string]*follower{},
-		tempos: map[string]*tempo{}, levels: map[string]float64{}, pressed: map[string]bool{}, bar: math.MinInt64,
+		tempos: map[string]*ownTempo{}, levels: map[string]float64{}, pressed: map[string]bool{}, bar: math.MinInt64,
 		desks: map[string]*desk{}, senders: map[string]*sender{}, everys: map[string]int64{}, toggles: map[string]bool{},
-		steppers: map[string]*stepper{}, held: map[portKey]bool{}, frozen: map[string]dmx.Universe{}, layerOf: map[*mix.Layer]string{}}
+		steppers: map[string]*stepper{}, held: map[portKey]bool{}, frozen: map[string]dmx.Universe{}, layerOf: map[*mix.Layer]string{},
+		clockIns: map[string]*clockIn{}, clockOuts: map[string]*clockOut{}, sync: syncs{deck: -1}}
 }
 
 // Set runs show s from now on: its modules in its wires' order, with a
@@ -411,8 +426,24 @@ func (e *Engine) Set(s show.Show) {
 				sd.port.close()
 			}
 			e.senders[m.ID] = &sender{port: &port{device: m.Device}, cc: -1}
+		case show.ClockIn:
+			if ci := e.clockIns[m.ID]; ci != nil && ci.port.device == m.Device {
+				continue
+			} else if ci != nil {
+				ci.port.close()
+			}
+			e.clockIns[m.ID] = newClockIn(m.Device)
+		case show.ClockOut:
+			if co := e.clockOuts[m.ID]; co != nil && co.port.device == m.Device {
+				continue
+			} else if co != nil {
+				co.stop()
+			}
+			co := newClockOut(m.Device)
+			co.out.Start()
+			e.clockOuts[m.ID] = co
 		case show.Fader, show.StageView, show.Beat, show.Tempo, show.Level, show.Pulse, show.Player, show.Button,
-			show.Map, show.Every, show.Toggle:
+			show.Map, show.Every, show.Toggle, show.Link, show.Serato:
 		}
 	}
 	for id, l := range e.layers {
@@ -469,6 +500,19 @@ func (e *Engine) Set(s show.Show) {
 			delete(e.senders, id)
 		}
 	}
+	for id, ci := range e.clockIns {
+		if m := e.s.Module(id); m == nil || m.Kind != show.ClockIn {
+			ci.port.close()
+			delete(e.clockIns, id)
+		}
+	}
+	for id, co := range e.clockOuts {
+		if m := e.s.Module(id); m == nil || m.Kind != show.ClockOut {
+			co.stop()
+			delete(e.clockOuts, id)
+		}
+	}
+	e.wantFeeds()
 	for id := range e.everys {
 		if !keep[id] {
 			delete(e.everys, id)
@@ -704,6 +748,14 @@ func (e *Engine) Tick() Live {
 			e.look(m, cat, &live)
 		case show.Chaser, show.Cues:
 			e.stepOn(m, dt, &live)
+		case show.Link:
+			e.linked(m, &live)
+		case show.Serato:
+			e.followSerato(m, &live)
+		case show.ClockIn:
+			e.clockedIn(m, now, &live)
+		case show.ClockOut:
+			e.clockedOut(m, now, &live)
 		case show.Button:
 			fired := e.pressed[id]
 			e.values[portKey{id, "out"}] = fired
@@ -768,4 +820,14 @@ func (e *Engine) Close() {
 		sd.port.close()
 		delete(e.senders, id)
 	}
+	for id, ci := range e.clockIns {
+		ci.port.close()
+		delete(e.clockIns, id)
+	}
+	for id, co := range e.clockOuts {
+		co.stop()
+		delete(e.clockOuts, id)
+	}
+	e.s.Modules = nil
+	e.wantFeeds()
 }
