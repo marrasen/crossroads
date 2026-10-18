@@ -139,6 +139,8 @@ func Ports(s *show.Show, m *show.Module) (ins, outs []Port) {
 			[]Port{{"done", "Reaches zero", Trigger}, {"left", "Left", Value}}
 	case show.Pattern:
 		return []Port{{"clock", "Clock", Clock}, {"play", "Play", Value}}, []Port{{"out", "Light", Light}}
+	case show.Routes:
+		return []Port{{"clock", "Clock", Clock}}, []Port{{"out", "Light", Light}, {"fired", "Fired", Trigger}}
 	}
 	return nil, nil
 }
@@ -315,6 +317,10 @@ type Engine struct {
 	// by ID.
 	timers   map[string]*timer
 	patterns map[string]pattern.Pattern
+	// hub holds the MIDI devices the modules use, and routers each MIDI
+	// routes module's routing.
+	hub     hub
+	routers map[string]*router
 }
 
 func (e *Engine) now() time.Time {
@@ -351,7 +357,7 @@ func New(changed func()) *Engine {
 		desks: map[string]*desk{}, senders: map[string]*sender{}, everys: map[string]int64{}, toggles: map[string]bool{},
 		steppers: map[string]*stepper{}, held: map[portKey]bool{}, frozen: map[string]dmx.Universe{}, layerOf: map[*mix.Layer]string{},
 		clockIns: map[string]*clockIn{}, clockOuts: map[string]*clockOut{}, sync: syncs{deck: -1},
-		timers: map[string]*timer{}, patterns: map[string]pattern.Pattern{}}
+		timers: map[string]*timer{}, patterns: map[string]pattern.Pattern{}, hub: newHub(), routers: map[string]*router{}}
 }
 
 // Set runs show s from now on: its modules in its wires' order, with a
@@ -422,36 +428,30 @@ func (e *Engine) Set(s show.Show) {
 			e.ears[m.ID] = a
 		case show.Controller:
 			d := e.desks[m.ID]
-			if d != nil && d.port.device == m.Device {
+			if d != nil && d.device == m.Device {
 				continue
 			}
-			if d != nil {
-				d.port.close()
-			} else {
+			if d == nil {
 				d = &desk{values: map[string]float64{}, pos: map[string]float64{}, caught: map[string]bool{}, held: map[string]bool{},
 					fired: map[string]bool{}, sent: map[string]int{}}
 				e.desks[m.ID] = d
 			}
 			// Another device: its lights and its sliders start afresh.
-			d.port, d.ch = &port{device: m.Device, listen: true}, -1
+			d.device, d.ch = m.Device, -1
 			clear(d.sent)
 			clear(d.caught)
 		case show.MIDIOut:
-			if sd := e.senders[m.ID]; sd != nil && sd.port.device == m.Device {
+			if sd := e.senders[m.ID]; sd != nil && sd.device == m.Device {
 				continue
-			} else if sd != nil {
-				sd.port.close()
 			}
-			e.senders[m.ID] = &sender{port: &port{device: m.Device}, cc: -1}
+			e.senders[m.ID] = &sender{device: m.Device, cc: -1}
 		case show.ClockIn:
-			if ci := e.clockIns[m.ID]; ci != nil && ci.port.device == m.Device {
+			if ci := e.clockIns[m.ID]; ci != nil && ci.device == m.Device {
 				continue
-			} else if ci != nil {
-				ci.port.close()
 			}
 			e.clockIns[m.ID] = newClockIn(m.Device)
 		case show.ClockOut:
-			if co := e.clockOuts[m.ID]; co != nil && co.port.device == m.Device {
+			if co := e.clockOuts[m.ID]; co != nil && co.device == m.Device {
 				continue
 			} else if co != nil {
 				co.stop()
@@ -461,6 +461,16 @@ func (e *Engine) Set(s show.Show) {
 			e.clockOuts[m.ID] = co
 		case show.Fader, show.StageView, show.Beat, show.Tempo, show.Level, show.Pulse, show.Player, show.Button,
 			show.Map, show.Every, show.Toggle, show.Link, show.Serato:
+		case show.Routes:
+			r := e.routers[m.ID]
+			if r == nil {
+				r = e.newRouter(&m)
+				e.routers[m.ID] = r
+			}
+			r.eng.SetRoutes(m.Routes)
+			r.eng.SetFixtures(e.s.Rig.Lights)
+			r.eng.SetGroups(e.s.Rig.Groups)
+			r.eng.SetCatalog(cat)
 		case show.Timer:
 			// There from the start, to be told what to do before it
 			// first ticks.
@@ -516,24 +526,28 @@ func (e *Engine) Set(s show.Show) {
 		}
 		e.song, e.state, e.deckErr = "", DeckState{}, ""
 	}
-	for id, d := range e.desks {
+	for id := range e.desks {
 		if m := e.s.Module(id); m == nil || m.Kind != show.Controller {
-			d.port.close()
 			delete(e.desks, id)
 		}
 	}
-	for id, sd := range e.senders {
+	for id := range e.senders {
 		if m := e.s.Module(id); m == nil || m.Kind != show.MIDIOut {
-			sd.port.close()
 			delete(e.senders, id)
 		}
 	}
-	for id, ci := range e.clockIns {
+	for id := range e.clockIns {
 		if m := e.s.Module(id); m == nil || m.Kind != show.ClockIn {
-			ci.port.close()
 			delete(e.clockIns, id)
 		}
 	}
+	for id, r := range e.routers {
+		if m := e.s.Module(id); m == nil || m.Kind != show.Routes {
+			delete(e.layerOf, r.layer)
+			delete(e.routers, id)
+		}
+	}
+	e.hub.want(&e.s)
 	for id, co := range e.clockOuts {
 		if m := e.s.Module(id); m == nil || m.Kind != show.ClockOut {
 			co.stop()
@@ -706,6 +720,7 @@ func (e *Engine) Tick() Live {
 		dt = min(max(now.Sub(e.last).Seconds(), 0), 0.25)
 	}
 	e.last = now
+	e.hub.tick(e.midiPorts(), now, e.changed)
 	e.playlist()
 	defer func() {
 		e.ev = events{}
@@ -770,7 +785,7 @@ func (e *Engine) Tick() Live {
 		case show.Controller:
 			e.control(m, now, &live)
 		case show.MIDIOut:
-			e.send(m, now, &live)
+			e.send(m, &live)
 		case show.Map, show.Every, show.Toggle:
 			e.logic(m, &live)
 		case show.Look:
@@ -782,13 +797,15 @@ func (e *Engine) Tick() Live {
 		case show.Serato:
 			e.followSerato(m, &live)
 		case show.ClockIn:
-			e.clockedIn(m, now, &live)
+			e.clockedIn(m, &live)
 		case show.ClockOut:
-			e.clockedOut(m, now, &live)
+			e.clockedOut(m, &live)
 		case show.Timer:
 			e.count(m, now, &live)
 		case show.Pattern:
 			e.playPattern(m, cat, &live)
+		case show.Routes:
+			e.route(m, cat, now, &live)
 		case show.Button:
 			fired := e.pressed[id]
 			e.values[portKey{id, "out"}] = fired
@@ -845,18 +862,11 @@ func (e *Engine) Close() {
 		_ = e.Deck.Close()
 		e.Deck = nil
 	}
-	for id, d := range e.desks {
-		d.port.close()
-		delete(e.desks, id)
-	}
-	for id, sd := range e.senders {
-		sd.port.close()
-		delete(e.senders, id)
-	}
-	for id, ci := range e.clockIns {
-		ci.port.close()
-		delete(e.clockIns, id)
-	}
+	clear(e.desks)
+	clear(e.senders)
+	clear(e.clockIns)
+	clear(e.routers)
+	e.hub.close()
 	for id, co := range e.clockOuts {
 		co.stop()
 		delete(e.clockOuts, id)

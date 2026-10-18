@@ -195,6 +195,11 @@ type (
 	}
 	// SetPattern has Pattern Module play the show's pattern Pattern.
 	SetPattern struct{ Module, Pattern string }
+	// SetRouteOn turns MIDI routes Module's route Route on or off.
+	SetRouteOn struct {
+		Module, Route string
+		On            bool
+	}
 	// Step moves Chaser or Cue list Module on a step, or back with By
 	// -1.
 	Step struct {
@@ -452,8 +457,7 @@ func (a *App) Handle(win int, in gunim.Intent) {
 			if len(s.Patterns) > 0 {
 				m.Pattern = s.Patterns[0].ID
 			}
-		case show.Fader, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Level, show.Player, show.Button,
-			show.MIDIOut, show.Toggle, show.Link, show.Serato, show.ClockIn, show.ClockOut:
+		default:
 		}
 		s.Modules = append(s.Modules, m)
 	case AddLight:
@@ -623,6 +627,14 @@ func (a *App) Handle(win int, in gunim.Intent) {
 	case SetPattern:
 		if m := s.Module(in.Module); m != nil {
 			m.Pattern = in.Pattern
+		}
+	case SetRouteOn:
+		if m := s.Module(in.Module); m != nil {
+			for i := range m.Routes {
+				if m.Routes[i].ID == in.Route {
+					m.Routes[i].Enabled = in.On
+				}
+			}
 		}
 	case Step:
 		a.eng.Step(in.Module, in.By)

@@ -34,6 +34,12 @@ func (f *fakeLink) Stop() {
 	f.stopped = true
 }
 
+func (f *fakeLink) SetPlaying(playing bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snap.Playing = playing
+}
+
 func (f *fakeLink) Snapshot() link.Snapshot {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -109,13 +115,11 @@ func TestMIDIClockInReadsTheTempoOfItsPulses(t *testing.T) {
 	var s show.Show
 	id := s.NewID("m")
 	s.Modules = []show.Module{{ID: id, Kind: show.ClockIn, Device: "DAW"}}
-	opened := make(chan struct{}, 4)
-	e := New(func() { opened <- struct{}{} })
+	e := New(nil)
 	e.MIDI = d
 	defer e.Close()
 	e.Set(s)
-	e.Tick()
-	<-opened
+	waitPorts(t, e)
 	start := time.Now().Add(-2 * time.Second)
 	d.mu.Lock()
 	f := d.f
@@ -139,13 +143,11 @@ func TestMIDIClockOutSendsStartAndPulses(t *testing.T) {
 	tp, out := s.NewID("m"), s.NewID("m")
 	s.Modules = []show.Module{{ID: tp, Kind: show.Tempo, BPM: 120, Manual: true}, {ID: out, Kind: show.ClockOut, Device: "Drum machine"}}
 	s.Wires = []show.Wire{{ID: "w", From: show.End{Module: tp, Port: "out"}, To: show.End{Module: out, Port: "in"}}}
-	opened := make(chan struct{}, 4)
-	e := New(func() { opened <- struct{}{} })
+	e := New(nil)
 	e.MIDI = d
 	defer e.Close()
 	e.Set(s)
-	e.Tick()
-	<-opened
+	waitPorts(t, e)
 	for range 12 {
 		e.Tick()
 		time.Sleep(25 * time.Millisecond)

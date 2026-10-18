@@ -114,7 +114,7 @@ var addGroups = []struct {
 	{"Sound and beat", []show.Kind{show.AudioIn, show.Player, show.Beat, show.Tempo, show.Level, show.Pulse}},
 	{"Looks", []show.Kind{show.Look, show.Chaser, show.Cues, show.Pattern}},
 	{"Sync", []show.Kind{show.Link, show.Serato, show.ClockIn, show.ClockOut}},
-	{"Controllers and logic", []show.Kind{show.Timer, show.Button, show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle}},
+	{"Controllers and logic", []show.Kind{show.Routes, show.Timer, show.Button, show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle}},
 }
 
 // kindIcon is the add menu's icon for a module of kind k.
@@ -160,6 +160,8 @@ func kindIcon(k show.Kind) *icon.Icon {
 		return icon.Repeat2
 	case show.Cues:
 		return icon.ListOrdered
+	case show.Routes:
+		return icon.Route
 	case show.Timer:
 		return icon.Timer
 	case show.Pattern:
@@ -260,7 +262,7 @@ func (r *routes) content(id string) gunim.Node {
 		f.OnCommit = func(v float64, _ *gunim.UI) gunim.Intent { return app.SetFade{Module: id, Fade: v} }
 		r.cueFades[id] = f
 		return padded(f)
-	case show.Lights, show.Mixer, show.StageView, show.Beat, show.Level, show.Player, show.Controller, show.MIDIOut, show.Toggle, show.Link, show.Serato, show.ClockIn, show.ClockOut:
+	default:
 	}
 	return nil
 }
@@ -659,7 +661,7 @@ func (r *routes) sync(u *gunim.UI) {
 			if r.played.Playing.Playing {
 				n.Glow = float32(engine.Flash(r.played.Clocks[m.ID].Beats, 1)) * 0.6
 			}
-		case show.Lights, show.Mixer, show.StageView, show.ClockOut:
+		default:
 		}
 		g.Nodes = append(g.Nodes, n)
 	}
@@ -793,6 +795,14 @@ func (r *routes) detail(m *show.Module) string {
 			return "On"
 		}
 		return "Off"
+	case show.Routes:
+		on := 0
+		for _, rt := range m.Routes {
+			if rt.Enabled {
+				on++
+			}
+		}
+		return strconv.Itoa(on) + " of " + strconv.Itoa(len(m.Routes)) + " routes on"
 	case show.Timer:
 		st := r.played.Timers[m.ID]
 		text := timeText(st.Shown)

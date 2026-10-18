@@ -14,6 +14,7 @@ import (
 	"strconv"
 
 	"github.com/marrasen/crossroads/pattern"
+	"github.com/marrasen/crossroads/routing"
 	"github.com/marrasen/gunim-dmx/fixtures"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/widget/dock"
@@ -132,12 +133,15 @@ const (
 	// Pattern plays one of the show's patterns, locked to a clock's
 	// beat, while it is held or on.
 	Pattern Kind = "pattern"
+	// Routes plays midittt's routes as they were: each MIDI message, or
+	// beat, it hears does what its route says.
+	Routes Kind = "midiroutes"
 )
 
 // Kinds are the kinds of module, in the order the Routes tab offers
 // them.
 var Kinds = []Kind{Fader, Lights, Mixer, DMXOut, StageView, AudioIn, Beat, Tempo, Level, Pulse, Player, Button,
-	Controller, MIDIOut, Map, Every, Toggle, Look, Chaser, Cues, Link, Serato, ClockIn, ClockOut, Timer, Pattern}
+	Controller, MIDIOut, Map, Every, Toggle, Look, Chaser, Cues, Link, Serato, ClockIn, ClockOut, Timer, Pattern, Routes}
 
 // Title is what a module of kind k is called.
 func (k Kind) Title() string {
@@ -194,6 +198,8 @@ func (k Kind) Title() string {
 		return "Timer"
 	case Pattern:
 		return "Pattern"
+	case Routes:
+		return "MIDI routes"
 	}
 	return string(k)
 }
@@ -253,6 +259,8 @@ type Module struct {
 	Stopwatch bool    `json:"stopwatch,omitempty"`
 	// Pattern is the pattern a Pattern module plays, by its ID.
 	Pattern string `json:"pattern,omitempty"`
+	// Routes are a MIDI routes module's routes, in order.
+	Routes []routing.Route `json:"routes,omitempty"`
 }
 
 // A ControlKind is what a controller's control is.
@@ -454,6 +462,7 @@ func (s *Show) Clone() Show {
 		c.Modules[i].Lights = slices.Clone(c.Modules[i].Lights)
 		c.Modules[i].Controls = slices.Clone(c.Modules[i].Controls)
 		c.Modules[i].Levels = maps.Clone(c.Modules[i].Levels)
+		c.Modules[i].Routes = slices.Clone(c.Modules[i].Routes)
 	}
 	c.Wires = slices.Clone(s.Wires)
 	c.Songs = slices.Clone(s.Songs)

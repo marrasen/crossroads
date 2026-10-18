@@ -184,9 +184,7 @@ func (e *Engine) stepOn(m *show.Module, dt float64, live *Live) {
 		} else {
 			st.t = 1
 		}
-	case show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Tempo,
-		show.Level, show.Pulse, show.Player, show.Button, show.Controller, show.MIDIOut, show.Map, show.Every,
-		show.Toggle, show.Look, show.Link, show.Serato, show.ClockIn, show.ClockOut, show.Timer, show.Pattern:
+	default:
 	}
 	blend(l, layers[st.from], layers[st.at], st.t)
 	e.values[portKey{m.ID, "out"}] = l
