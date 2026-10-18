@@ -13,7 +13,25 @@ It is built with [gunim](https://github.com/marrasen/gunim) and drives
 lights through [gunim-dmx](https://github.com/marrasen/gunim-dmx). It
 takes over from midittt.
 
-**Status:** being planned. See [plans/plan.md](plans/plan.md).
+**Status:** a first skeleton. It opens with a Fun Generation Diamond
+Dome on an eight by five metre stage, a fader for each of its colours,
+a mixer, a DMX out and the stage view, all wired up:
+
+- **Routes** shows the modules and their wires. Drag from a port to
+  join it to another of the same kind; the buttons over it add
+  modules.
+- **Stage** shows the room from above, each light glowing as it plays.
+  Drag a light to hang it elsewhere.
+- **Faders** is a fader for each fader module, and the grand master.
+- **Rig** is the lights, their types and their addresses.
+
+Tabs drag into any arrangement, and out into windows of their own.
+Ctrl+S saves the show, Ctrl+O opens one. See
+[plans/plan.md](plans/plan.md) for what comes next.
+
+```sh
+go run github.com/marrasen/crossroads@latest
+```
 
 ## Licence
 
