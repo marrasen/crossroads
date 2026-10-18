@@ -17,6 +17,7 @@ import (
 	"github.com/marrasen/crossroads/controller"
 	"github.com/marrasen/crossroads/engine"
 	"github.com/marrasen/crossroads/midittt"
+	"github.com/marrasen/crossroads/pattern"
 	"github.com/marrasen/crossroads/player"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
@@ -205,6 +206,17 @@ type (
 	SetProgram struct{ Module, Program string }
 	// FireEffect fires Effect Module.
 	FireEffect struct{ Module string }
+	// SavePattern puts Pattern in the show, in place of the pattern of
+	// its ID, or as a new one.
+	SavePattern struct{ Pattern pattern.Pattern }
+	// RemovePattern takes the pattern of ID out of the show.
+	RemovePattern struct{ ID string }
+	// TestPattern plays Pattern on the stage while On, as the pattern
+	// editor's test button is held.
+	TestPattern struct {
+		Pattern pattern.Pattern
+		On      bool
+	}
 	// SetRouteOn turns MIDI routes Module's route Route on or off.
 	SetRouteOn struct {
 		Module, Route string
@@ -665,6 +677,27 @@ func (a *App) Handle(win int, in gunim.Intent) {
 		}
 	case FireEffect:
 		a.eng.FireEffect(in.Module)
+		return
+	case SavePattern:
+		p := in.Pattern
+		p.Lanes = slices.Clone(p.Lanes)
+		if i := slices.IndexFunc(s.Patterns, func(o pattern.Pattern) bool { return o.ID == p.ID }); i >= 0 {
+			s.Patterns[i] = p
+		} else {
+			if p.ID == "" {
+				p.ID = s.NewID("pattern")
+			}
+			s.Patterns = append(s.Patterns, p)
+		}
+	case RemovePattern:
+		s.Patterns = slices.DeleteFunc(s.Patterns, func(p pattern.Pattern) bool { return p.ID == in.ID })
+	case TestPattern:
+		if in.On {
+			p := in.Pattern
+			a.eng.Audition(&p)
+		} else {
+			a.eng.Audition(nil)
+		}
 		return
 	case SetRouteOn:
 		if m := s.Module(in.Module); m != nil {

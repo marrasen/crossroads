@@ -26,6 +26,10 @@ a mixer, a DMX out and the stage view, all wired up:
 - **Player** is the playlist and the transport.
 - **Controllers** is each MIDI controller and MIDI out: its port, its
   controls as they move, and learning new ones.
+- **Patterns** draws light patterns on the beat, as midittt's editor
+  did: a lane for each group or light, clips of colour, level, strobe
+  or a function dragged along the bars, and Try to play one on the
+  stage while held.
 - **Live** is the page to play the show from: each grand master,
   blackout, flash and hold, a pad for each look, GO and Back for each
   cue list, and the buttons and toggles.

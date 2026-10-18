@@ -147,3 +147,51 @@ func (e *Engine) playPattern(m *show.Module, cat fixtures.Catalog, live *Live) {
 		l.Set(w.Slot, byte(min(max(v, 0), 255)))
 	}
 }
+
+// Audition plays pattern p on the stage, through every mixer, as the
+// pattern editor's test button is held, or stops it with nil: on the
+// first Tempo's beat, or at 120 where the show has none.
+func (e *Engine) Audition(p *pattern.Pattern) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if p == nil {
+		e.audition = nil
+		e.audLayer.Clear()
+		return
+	}
+	c := *p
+	e.audition = &c
+}
+
+// audit plays the pattern auditioned, dt after the last tick.
+func (e *Engine) audit(dt float64, cat fixtures.Catalog) {
+	e.audLayer.Clear()
+	p := e.audition
+	if p == nil {
+		return
+	}
+	beats := -1.0
+	for _, id := range e.order {
+		if m := e.s.Module(id); m != nil && m.Kind == show.Tempo {
+			if c, ok := e.values[portKey{id, "out"}].(Count); ok && c.BPM > 0 {
+				beats = c.Beats
+			}
+			break
+		}
+	}
+	if beats < 0 {
+		e.audBeats += dt * 2
+		beats = e.audBeats
+	}
+	pos := math.Mod(beats, p.Length())
+	if pos < 0 {
+		pos += p.Length()
+	}
+	for _, w := range pattern.ValuesAt(*p, pos, e.s.Rig.Lights, e.s.Rig.Groups, cat) {
+		v := w.Value
+		if fp, found := fixtures.FindPatch(e.s.Rig.Lights, w.FixtureID); found {
+			v = cat.CurveValueAt(fp, w.Offset, v)
+		}
+		e.audLayer.Set(w.Slot, byte(min(max(v, 0), 255)))
+	}
+}

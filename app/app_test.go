@@ -372,3 +372,20 @@ func TestARigIsImportedAndToldOfOnce(t *testing.T) {
 		t.Errorf("a bad rig left the show %q, saying %v", a.st.Show.Name, a.st.Notes)
 	}
 }
+
+// TestPatternsAreSavedReplacedAndTakenOut: one of an ID there replaces
+// it, one of none is added with one, and one taken out goes.
+func TestPatternsAreSavedReplacedAndTakenOut(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	a.Handle(0, SavePattern{Pattern: pattern.Pattern{ID: "p", Name: "One"}})
+	a.Handle(0, SavePattern{Pattern: pattern.Pattern{Name: "Two"}})
+	a.Handle(0, SavePattern{Pattern: pattern.Pattern{ID: "p", Name: "One again"}})
+	ps := a.st.Show.Patterns
+	if len(ps) != 2 || ps[0].Name != "One again" || ps[1].ID == "" {
+		t.Fatalf("the patterns are %+v", ps)
+	}
+	a.Handle(0, RemovePattern{ID: "p"})
+	if len(a.st.Show.Patterns) != 1 || a.st.Show.Patterns[0].Name != "Two" {
+		t.Errorf("taken out, the patterns are %+v", a.st.Show.Patterns)
+	}
+}

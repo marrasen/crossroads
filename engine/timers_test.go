@@ -108,3 +108,22 @@ func TestAPatternPlaysLockedToTheBeatWhileHeld(t *testing.T) {
 		t.Errorf("let go on its third beat, the pattern still plays red %d", live.Stage[0])
 	}
 }
+
+// TestAPatternAuditionedPlaysOnTheStage, over all else, until stopped.
+func TestAPatternAuditionedPlaysOnTheStage(t *testing.T) {
+	s := show.Start()
+	light := s.Rig.Lights[0].ID
+	p := pattern.Pattern{ID: "p", Bars: 1, Lanes: []pattern.Lane{{ID: "l", FixtureID: light, Clips: []pattern.Clip{
+		{ID: "c", Start: 0, Length: 4, Kind: pattern.KindColour, Colour: pattern.Colour{G: 255}}}}}}
+	e := New(nil)
+	defer e.Close()
+	e.Set(s)
+	e.Audition(&p)
+	if live := e.Tick(); live.Stage[1] != 255 {
+		t.Errorf("auditioned, the pattern plays green %d", live.Stage[1])
+	}
+	e.Audition(nil)
+	if live := e.Tick(); live.Stage[1] != 0 {
+		t.Errorf("stopped, the pattern still plays green %d", live.Stage[1])
+	}
+}

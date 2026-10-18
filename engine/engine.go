@@ -328,6 +328,12 @@ type Engine struct {
 	// show's effect programmes, by ID.
 	effects  map[string]*fxRunner
 	programs map[string]fx.Program
+	// audition is the pattern the editor plays while its test button
+	// is held, audLayer its light, and audBeats the beat it counts
+	// where the show has no Tempo.
+	audition *pattern.Pattern
+	audLayer *mix.Layer
+	audBeats float64
 }
 
 func (e *Engine) now() time.Time {
@@ -365,7 +371,7 @@ func New(changed func()) *Engine {
 		steppers: map[string]*stepper{}, held: map[portKey]bool{}, frozen: map[string]dmx.Universe{}, layerOf: map[*mix.Layer]string{},
 		clockIns: map[string]*clockIn{}, clockOuts: map[string]*clockOut{}, sync: syncs{deck: -1},
 		timers: map[string]*timer{}, patterns: map[string]pattern.Pattern{}, hub: newHub(), routers: map[string]*router{},
-		effects: map[string]*fxRunner{}, programs: map[string]fx.Program{}}
+		effects: map[string]*fxRunner{}, programs: map[string]fx.Program{}, audLayer: mix.NewLayer()}
 }
 
 // Set runs show s from now on: its modules in its wires' order, with a
@@ -738,6 +744,7 @@ func (e *Engine) Tick() Live {
 	e.last = now
 	e.hub.tick(e.midiPorts(), now, e.changed)
 	e.playlist()
+	e.audit(dt, cat)
 	defer func() {
 		e.ev = events{}
 		clear(e.pressed)
@@ -764,6 +771,11 @@ func (e *Engine) Tick() Live {
 					mx.Add(l)
 					e.heard[id] = append(e.heard[id], l)
 				}
+			}
+			if e.audition != nil {
+				// The pattern being tried, over all else.
+				mx.Add(e.audLayer)
+				e.heard[id] = append(e.heard[id], e.audLayer)
 			}
 			mx.SetMaster(m.Value)
 			u, on := e.overrideAll(id, mx.Merge(&e.dims))
