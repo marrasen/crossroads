@@ -8,6 +8,7 @@ import (
 	"github.com/marrasen/crossroads/engine"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
+	"github.com/marrasen/gunim/audio/capture"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/gunimtest"
 	"github.com/marrasen/gunim/input"
@@ -141,5 +142,75 @@ func TestLeavingAShowNotSavedAsksFirst(t *testing.T) {
 	onUI(t, w, func(f *frame, u *gunim.UI) { in = f.ask.OnAccept(u) })
 	if _, ok := in.(app.New); !ok {
 		t.Errorf("leaving it asks for %#v, not a new show", in)
+	}
+}
+
+// TestTheBeatModulesShowTheirBeat: a Tempo's box holds a tap button
+// that taps it, a Beat's says the tempo it hears, and an Audio in's
+// offers the inputs.
+func TestTheBeatModulesShowTheirBeat(t *testing.T) {
+	listInputs = func() ([]capture.Device, error) { return []capture.Device{{ID: "mic", Name: "Microphone"}}, nil }
+	defer func() { listInputs = capture.Devices }()
+	s := show.Start()
+	add := func(k show.Kind, at geom.Point) string {
+		m := show.Module{ID: s.NewID("m"), Kind: k, Name: k.Title(), At: at, BPM: 128, Every: 2}
+		s.Modules = append(s.Modules, m)
+		return m.ID
+	}
+	in, bt, tp, pl := add(show.AudioIn, geom.Pt(300, 260)), add(show.Beat, geom.Pt(300, 380)), add(show.Tempo, geom.Pt(560, 300)), add(show.Pulse, geom.Pt(560, 460))
+	w := gunimtest.New(t, geom.Sz(1280, 800), nil)
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: s}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	live := engine.Live{Values: map[string]float64{pl: 0.5}, Clocks: map[string]engine.Count{bt: {BPM: 124, Beats: 3.2, Sure: true}},
+		Ears: map[string]string{in: "Microphone"}}
+	if err := c.Patch(app.LiveTopic, live); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		w.Frame(time.Second / 60)
+	}
+	f := frameOf(t, w)
+	r, ok := f.tabs[show.TabRoutes].(*routes)
+	if !ok {
+		t.Fatal("no Routes tab")
+	}
+	m := func(id string) *show.Module { return r.st.Show.Module(id) }
+	for id, want := range map[string]string{in: "Microphone", bt: "124.0 BPM", pl: "Every 2 beats"} {
+		if got := r.detail(m(id)); got != want {
+			t.Errorf("%s says %q, want %q", m(id).Name, got, want)
+		}
+	}
+	if d := r.inputs[in]; d == nil || len(r.heard) != 1 {
+		t.Fatal("the Audio in offers no inputs")
+	}
+	if fd := r.bpms[tp]; fd == nil || fd.Value() != 128 {
+		t.Fatal("the Tempo's box shows no tempo of 128")
+	}
+	// Tap the tap button.
+	ui := frameUI(t, w)
+	tap := r.taps[tp]
+	if tap == nil {
+		t.Fatal("the Tempo's box has no tap button")
+	}
+	b, ok := ui.Bounds(tap)
+	if !ok {
+		t.Fatal("the tap button is not drawn")
+	}
+	w.Input(input.PointerMove{Pos: b.Center()})
+	w.Input(input.PointerDown{Pos: b.Center(), Button: input.ButtonPrimary, Clicks: 1})
+	w.Input(input.PointerUp{Pos: b.Center(), Button: input.ButtonPrimary})
+	w.Frame(time.Second / 60)
+	var tapped bool
+	for len(c.Intents()) > 0 {
+		if tp2, ok := (<-c.Intents()).Intent.(app.Tap); ok && tp2.Module == tp {
+			tapped = true
+		}
+	}
+	if !tapped {
+		t.Error("the tap button tapped nothing")
 	}
 }

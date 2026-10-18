@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 
 	"github.com/marrasen/crossroads/app"
@@ -10,7 +11,9 @@ import (
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
 	"github.com/marrasen/gunim-dmx/dmx"
+	"github.com/marrasen/gunim/audio/capture"
 	"github.com/marrasen/gunim/geom"
+	"github.com/marrasen/gunim/icon"
 	"github.com/marrasen/gunim/paint"
 	"github.com/marrasen/gunim/theme"
 	"github.com/marrasen/gunim/widget"
@@ -18,17 +21,29 @@ import (
 )
 
 // routes is the Routes tab: the show's modules joined by wires, and a
-// row of buttons over them that add modules. A fader's box holds its
+// menu over them that adds modules. A fader's box holds its
 // fader, and a DMX out's the box it sends to.
 type routes struct {
 	view    *graph.View
-	add     []*widget.Button
+	add     *widget.MenuButton
 	st      *app.State
 	played  engine.Live
 	th      *theme.Live
 	faders  map[string]*widget.Slider
 	devices map[string]*widget.Dropdown
-	size    geom.Size
+	// The controls of the modules that hear and count: each Audio in's
+	// input, each Tempo's tap button, its tempo and its follow box,
+	// and each Pulse's length.
+	inputs  map[string]*widget.Dropdown
+	taps    map[string]*widget.Button
+	bpms    map[string]*widget.NumberField
+	follows map[string]*widget.Checkbox
+	everys  map[string]*widget.Segmented
+	// heard are the sound card's inputs, listed once, as an Audio in
+	// first asks.
+	heard  []capture.Device
+	listed bool
+	size   geom.Size
 	// ports are each module's inputs and outputs, as the show last
 	// gave them.
 	ports map[string][2][]engine.Port
@@ -45,7 +60,8 @@ var devices = []struct{ id, name string }{
 
 func newRoutes() *routes {
 	r := &routes{view: graph.NewView(), faders: map[string]*widget.Slider{}, devices: map[string]*widget.Dropdown{},
-		ports: map[string][2][]engine.Port{}}
+		inputs: map[string]*widget.Dropdown{}, taps: map[string]*widget.Button{}, bpms: map[string]*widget.NumberField{}, follows: map[string]*widget.Checkbox{},
+		everys: map[string]*widget.Segmented{}, ports: map[string][2][]engine.Port{}}
 	r.view.Content = r.content
 	r.view.Accepts = func(from, to graph.End) (bool, string) {
 		if r.st == nil {
@@ -53,15 +69,62 @@ func newRoutes() *routes {
 		}
 		return engine.CanJoin(&r.st.Show, show.End{Module: from.Node, Port: from.Port}, show.End{Module: to.Node, Port: to.Port})
 	}
-	for _, k := range show.Kinds {
-		b := widget.NewButton("+ " + k.Title())
-		b.OnClick = func(*gunim.UI) gunim.Intent {
-			at := r.view.ToPlane(geom.Pt(r.size.W/2, r.size.H/2)).Sub(geom.Pt(90, 40))
-			return app.AddModule{Kind: k, At: at}
+	var items []widget.MenuItem
+	var kinds []show.Kind
+	for i, group := range addGroups {
+		if i > 0 {
+			items, kinds = append(items, widget.MenuItem{Break: true}), append(kinds, "")
 		}
-		r.add = append(r.add, b)
+		items, kinds = append(items, widget.MenuItem{Label: group.title, Caption: true}), append(kinds, "")
+		for _, k := range group.kinds {
+			items, kinds = append(items, widget.MenuItem{Label: k.Title(), Icon: kindIcon(k)}), append(kinds, k)
+		}
+	}
+	r.add = widget.NewMenuButton("Add module", items)
+	r.add.OnPick = func(i int, _ *gunim.UI) gunim.Intent {
+		if i < 0 || i >= len(kinds) || kinds[i] == "" {
+			return nil
+		}
+		at := r.view.ToPlane(geom.Pt(r.size.W/2, r.size.H/2)).Sub(geom.Pt(90, 40))
+		return app.AddModule{Kind: kinds[i], At: at}
 	}
 	return r
+}
+
+// addGroups are the kinds of module the add menu offers, in groups.
+var addGroups = []struct {
+	title string
+	kinds []show.Kind
+}{
+	{"Light", []show.Kind{show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView}},
+	{"Sound and beat", []show.Kind{show.AudioIn, show.Beat, show.Tempo, show.Level, show.Pulse}},
+}
+
+// kindIcon is the add menu's icon for a module of kind k.
+func kindIcon(k show.Kind) *icon.Icon {
+	switch k {
+	case show.Fader:
+		return icon.SlidersVertical
+	case show.Lights:
+		return icon.Lightbulb
+	case show.Mixer:
+		return icon.Blend
+	case show.DMXOut:
+		return icon.Cable
+	case show.StageView:
+		return icon.Theater
+	case show.AudioIn:
+		return icon.Mic
+	case show.Beat:
+		return icon.Activity
+	case show.Tempo:
+		return icon.Metronome
+	case show.Level:
+		return icon.Gauge
+	case show.Pulse:
+		return icon.Zap
+	}
+	return icon.Plus
 }
 
 // content makes what module m's box holds: a fader's fader, a DMX out's
@@ -105,9 +168,77 @@ func (r *routes) content(id string) gunim.Node {
 		}
 		r.devices[id] = d
 		return padded(d)
-	case show.Lights, show.Mixer, show.StageView:
+	case show.AudioIn:
+		return r.inputContent(m)
+	case show.Tempo:
+		return r.tempoContent(m)
+	case show.Pulse:
+		sg := widget.NewSegmented(everyNames...)
+		sg.SetSelected(everyIndex(m.Every), nil)
+		sg.OnChange = func(i int, _ *gunim.UI) gunim.Intent { return app.SetEvery{Module: id, Every: everys[i]} }
+		r.everys[id] = sg
+		return padded(sg)
+	case show.Lights, show.Mixer, show.StageView, show.Beat, show.Level:
 	}
 	return nil
+}
+
+// listInputs lists the sound card's inputs. Tests put a list of their
+// own in.
+var listInputs = capture.Devices
+
+// inputContent is an Audio in's box: a list of the inputs to listen to.
+func (r *routes) inputContent(m *show.Module) gunim.Node {
+	if !r.listed {
+		r.listed = true
+		r.heard, _ = listInputs()
+	}
+	names := append(make([]string, 0, 1+len(r.heard)), "Default input")
+	ids := append(make([]string, 0, 1+len(r.heard)), "")
+	for _, d := range r.heard {
+		names = append(names, d.Name)
+		ids = append(ids, d.ID)
+	}
+	d := widget.NewDropdown(widget.Labels(names...))
+	if i := slices.Index(ids, m.Input); i >= 0 {
+		d.SetSelected(i, nil)
+	}
+	id := m.ID
+	d.OnChange = func(i int, _ *gunim.UI) gunim.Intent { return app.SetInput{Module: id, Input: ids[i]} }
+	r.inputs[id] = d
+	return padded(d)
+}
+
+// tempoContent is a Tempo's box: a button to tap the beat on, its own
+// tempo to type, and whether it follows the clock wired into it.
+func (r *routes) tempoContent(m *show.Module) gunim.Node {
+	id := m.ID
+	tap := widget.NewButton("Tap")
+	tap.OnClick = widget.Sends(app.Tap{Module: id})
+	bpm := widget.NewNumberField(app.MinBPM, app.MaxBPM)
+	bpm.Decimals, bpm.Suffix = 1, " BPM"
+	bpm.SetValue(m.BPM, nil)
+	bpm.OnCommit = func(v float64, _ *gunim.UI) gunim.Intent { return app.SetTempo{Module: id, BPM: v, Manual: true} }
+	follow := widget.NewCheckbox("Follow the clock in")
+	follow.SetChecked(!m.Manual, nil)
+	follow.OnChange = func(on bool, _ *gunim.UI) gunim.Intent { return app.SetTempo{Module: id, Manual: !on} }
+	r.taps[id], r.bpms[id], r.follows[id] = tap, bpm, follow
+	w := widget.NewWrap(tap, widget.NewSized(bpm, 104, 0), follow)
+	return padded(w)
+}
+
+// The lengths a Pulse offers, in beats, and what its buttons say.
+var (
+	everys     = []float64{0.25, 0.5, 1, 2, 4}
+	everyNames = []string{"¼", "½", "1", "2", "4"}
+)
+
+// everyIndex is which of the lengths every is, 1 where it is none.
+func everyIndex(every float64) int {
+	if i := slices.Index(everys, every); i >= 0 {
+		return i
+	}
+	return slices.Index(everys, 1)
 }
 
 // padding is the room round what a box holds.
@@ -137,6 +268,25 @@ func (r *routes) show(s *app.State, u *gunim.UI) {
 			}
 		}
 	}
+	for _, m := range []map[string]*widget.Dropdown{r.devices, r.inputs} {
+		maps.DeleteFunc(m, func(id string, _ *widget.Dropdown) bool { return s.Show.Module(id) == nil })
+	}
+	maps.DeleteFunc(r.faders, func(id string, _ *widget.Slider) bool { return s.Show.Module(id) == nil })
+	maps.DeleteFunc(r.taps, func(id string, _ *widget.Button) bool { return s.Show.Module(id) == nil })
+	maps.DeleteFunc(r.bpms, func(id string, _ *widget.NumberField) bool { return s.Show.Module(id) == nil })
+	maps.DeleteFunc(r.follows, func(id string, _ *widget.Checkbox) bool { return s.Show.Module(id) == nil })
+	maps.DeleteFunc(r.everys, func(id string, _ *widget.Segmented) bool { return s.Show.Module(id) == nil })
+	for id, f := range r.bpms {
+		if m := s.Show.Module(id); m != nil && (u == nil || !u.HasFocus(f)) {
+			f.SetValue(m.BPM, u)
+			r.follows[id].SetChecked(!m.Manual, u)
+		}
+	}
+	for id, sg := range r.everys {
+		if m := s.Show.Module(id); m != nil {
+			sg.SetSelected(everyIndex(m.Every), u)
+		}
+	}
 	r.sync(u)
 }
 
@@ -144,7 +294,8 @@ func (r *routes) show(s *app.State, u *gunim.UI) {
 // and the wires glow as their values rise. Nothing changed, nothing is
 // done.
 func (r *routes) live(l engine.Live, u *gunim.UI) {
-	same := maps.Equal(l.Values, r.played.Values) && maps.Equal(l.Outs, r.played.Outs)
+	same := maps.Equal(l.Values, r.played.Values) && maps.Equal(l.Outs, r.played.Outs) &&
+		maps.Equal(l.Clocks, r.played.Clocks) && maps.Equal(l.Ears, r.played.Ears)
 	r.played = l
 	if same {
 		return
@@ -182,8 +333,20 @@ func (r *routes) sync(u *gunim.UI) {
 		case show.Fader:
 			n.Body = 30
 			n.Glow = float32(r.value(m)) * 0.6
-		case show.DMXOut:
+		case show.DMXOut, show.AudioIn:
 			n.Body = 36
+		case show.Tempo:
+			n.Body, n.Width = 76, 240
+			n.Glow = float32(engine.Flash(r.played.Clocks[m.ID].Beats, 1)) * 0.6
+		case show.Beat:
+			if c := r.played.Clocks[m.ID]; c.BPM > 0 {
+				n.Glow = float32(engine.Flash(c.Beats, 1)) * 0.6
+			}
+		case show.Pulse:
+			n.Body, n.Width = 36, 200
+			n.Glow = float32(r.value(m)) * 0.6
+		case show.Level:
+			n.Glow = float32(r.value(m)) * 0.6
 		case show.Lights, show.Mixer, show.StageView:
 		}
 		g.Nodes = append(g.Nodes, n)
@@ -197,7 +360,12 @@ func (r *routes) sync(u *gunim.UI) {
 				if m := s.Module(w.From.Module); m != nil {
 					gw.Flow = float32(r.value(m))
 				}
-			case engine.Light, engine.DMX:
+			case engine.Clock:
+				gw.Thin = true
+				if m := s.Module(w.From.Module); m != nil {
+					gw.Flow = float32(engine.Flash(r.played.Clocks[m.ID].Beats, 1))
+				}
+			case engine.Light, engine.DMX, engine.Audio:
 				gw.Flow = 0.5
 			}
 		}
@@ -241,6 +409,40 @@ func (r *routes) detail(m *show.Module) string {
 		return st.Info.Label()
 	case show.StageView:
 		return "On the Stage tab"
+	case show.AudioIn:
+		if says, ok := r.played.Ears[m.ID]; ok {
+			return says
+		}
+		return "Opening…"
+	case show.Beat:
+		c := r.played.Clocks[m.ID]
+		switch {
+		case c.BPM <= 0:
+			return "Listening for a beat…"
+		case !c.Sure:
+			return fmt.Sprintf("%.1f BPM, counting on", c.BPM)
+		}
+		return fmt.Sprintf("%.1f BPM", c.BPM)
+	case show.Tempo:
+		c := r.played.Clocks[m.ID]
+		if c.BPM <= 0 {
+			return ""
+		}
+		if !m.Manual && c.BPM != m.BPM {
+			return fmt.Sprintf("%.1f BPM, following", c.BPM)
+		}
+		return fmt.Sprintf("%.1f BPM", c.BPM)
+	case show.Level:
+		return strconv.Itoa(int(r.value(m)*100+0.5)) + "%"
+	case show.Pulse:
+		every := m.Every
+		if every <= 0 {
+			every = 1
+		}
+		if every == 1 {
+			return "Every beat"
+		}
+		return "Every " + strconv.FormatFloat(every, 'f', -1, 64) + " beats"
 	}
 	return ""
 }
@@ -261,19 +463,13 @@ func ports(th *theme.Live, ps []engine.Port) []graph.Port {
 	return out
 }
 
-// Children implements [gunim.Composite]: the buttons, then the view.
-func (r *routes) Children() []gunim.Node {
-	out := make([]gunim.Node, 0, len(r.add)+1)
-	for _, b := range r.add {
-		out = append(out, b)
-	}
-	return append(out, r.view)
-}
+// Children implements [gunim.Composite]: the add menu, then the view.
+func (r *routes) Children() []gunim.Node { return []gunim.Node{r.add, r.view} }
 
-// barH is how tall the row of buttons is.
+// barH is how tall the bar over the view is.
 const barH = 44
 
-// Layout implements [gunim.Node]: the buttons along the top, the view
+// Layout implements [gunim.Node]: the add menu along the top, the view
 // under them.
 func (r *routes) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Children) geom.Size {
 	size := c.Max
