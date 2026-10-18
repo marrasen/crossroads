@@ -94,17 +94,11 @@ func newMIDIRig(t *testing.T) *midiRig {
 		{ID: "w1", From: show.End{Module: r.ctl, Port: "button1"}, To: show.End{Module: r.toggle, Port: "in"}},
 		{ID: "w2", From: show.End{Module: r.toggle, Port: "out"}, To: show.End{Module: r.ctl, Port: "light:button1"}},
 	}
-	opened := make(chan struct{}, 4)
-	r.e = New(func() { opened <- struct{}{} })
+	r.e = New(nil)
 	r.e.MIDI = r.d
 	r.e.Now = func() time.Time { return r.now }
 	r.e.Set(r.s)
-	r.e.Tick()
-	select {
-	case <-opened:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the controller never opened")
-	}
+	waitPorts(t, r.e)
 	t.Cleanup(r.e.Close)
 	return r
 }
@@ -199,7 +193,7 @@ func TestTheFaderTakesOverOnlyOnceItPassesItsValue(t *testing.T) {
 	r.now = r.now.Add(3 * time.Second)
 	r.tick()
 	// Wait for it to open again, wholly.
-	p := r.e.desks[r.ctl].port
+	p := r.e.hub.ins["X-TOUCH MINI"]
 	for range 2000 {
 		r.tick()
 		r.d.mu.Lock()
@@ -257,13 +251,11 @@ func TestAMIDIOutPlaysANoteForATriggerAndMovesForAValue(t *testing.T) {
 		{ID: out, Kind: show.MIDIOut, Device: "Synth", Channel: 2, Note: 64, CC: 20}}
 	s.Wires = []show.Wire{{ID: "w1", From: show.End{Module: btn, Port: "out"}, To: show.End{Module: out, Port: "note"}},
 		{ID: "w2", From: show.End{Module: f, Port: "out"}, To: show.End{Module: out, Port: "value"}}}
-	opened := make(chan struct{}, 4)
-	e := New(func() { opened <- struct{}{} })
+	e := New(nil)
 	e.MIDI = d
 	defer e.Close()
 	e.Set(s)
-	e.Tick()
-	<-opened
+	waitPorts(t, e)
 	e.Tick()
 	if sent := d.took(); len(sent) != 1 || !same(sent[0], midi.Control(2, 20, 64)) {
 		t.Errorf("a fader at half sent %v", sent)
@@ -334,7 +326,7 @@ func TestAPortThatWillNotOpenIsTriedAgainQuietly(t *testing.T) {
 	if out, err := (systemMIDI{}).OpenOut("crossroads: no such port"); err == nil || out != nil {
 		t.Fatalf("a port not there opened as %v, %v", out, err)
 	}
-	p := &port{device: "crossroads: no such port", listen: true}
+	p := &port{device: "crossroads: no such port", in: true}
 	p.open(systemMIDI{}, time.Unix(1000, 0), nil)
 	for range 500 {
 		p.mu.Lock()
@@ -347,4 +339,30 @@ func TestAPortThatWillNotOpenIsTriedAgainQuietly(t *testing.T) {
 	}
 	p.open(systemMIDI{}, time.Unix(1010, 0), nil)
 	p.close()
+}
+
+// waitPorts ticks e until every MIDI port it uses has tried to open,
+// and none is still opening.
+func waitPorts(t *testing.T, e *Engine) {
+	t.Helper()
+	for range 5000 {
+		e.Tick()
+		e.mu.Lock()
+		done := true
+		for _, ports := range []map[string]*port{e.hub.ins, e.hub.outs} {
+			for _, p := range ports {
+				p.mu.Lock()
+				if p.busy || p.tried.IsZero() {
+					done = false
+				}
+				p.mu.Unlock()
+			}
+		}
+		e.mu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("the MIDI ports never opened")
 }

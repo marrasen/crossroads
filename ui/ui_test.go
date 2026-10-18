@@ -6,6 +6,7 @@ import (
 
 	"github.com/marrasen/crossroads/app"
 	"github.com/marrasen/crossroads/engine"
+	"github.com/marrasen/crossroads/routing"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
 	"github.com/marrasen/gunim/audio/capture"
@@ -430,5 +431,53 @@ func TestTheLivePageHoldsBlackoutWhileItIsHeld(t *testing.T) {
 	down, _ = press("Warm")
 	if len(down) != 1 || down[0] != (app.SetValue{Module: look, Value: 1, Done: true}) {
 		t.Errorf("the look's pad asks %v", down)
+	}
+}
+
+// TestARoutesCardListsItsRoutesAndTurnsThemOff: each route's name and
+// what it does, and its on box asks to turn it off.
+func TestARoutesCardListsItsRoutesAndTurnsThemOff(t *testing.T) {
+	s := show.Start()
+	rt := s.NewID("m")
+	s.Modules = append(s.Modules, show.Module{ID: rt, Kind: show.Routes, Name: "Pads", Routes: []routing.Route{
+		{ID: "a", Name: "Red pad", Enabled: true, Input: routing.Input{DeviceName: "Pads", Channel: 1, Type: routing.NoteOn, Data1: routing.One(36)},
+			Output: routing.Output{Kind: routing.ToTimer, Command: routing.TimerStart}},
+	}})
+	s.Layout.Show(show.TabMIDI)
+	w := gunimtest.New(t, geom.Sz(1280, 800), nil)
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: s}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		w.Frame(time.Second / 60)
+	}
+	tab, _ := frameOf(t, w).tabs[show.TabMIDI].(*controllers)
+	cd := tab.list.cards[rt]
+	if cd == nil || cd.ons["a"] == nil || !cd.ons["a"].Checked() {
+		t.Fatal("the routes card has no on box for its route")
+	}
+	if got := s.Modules[len(s.Modules)-1].Routes[0].Says(); got != "Pads Note ON 36 on channel 1 → start a timer" {
+		t.Errorf("the route says %q", got)
+	}
+	ui := frameUI(t, w)
+	b, ok := ui.Bounds(cd.ons["a"])
+	if !ok {
+		t.Fatal("the on box is not drawn")
+	}
+	w.Input(input.PointerMove{Pos: b.Center()})
+	w.Input(input.PointerDown{Pos: b.Center(), Button: input.ButtonPrimary, Clicks: 1})
+	w.Input(input.PointerUp{Pos: b.Center(), Button: input.ButtonPrimary})
+	w.Frame(time.Second / 60)
+	var off bool
+	for len(c.Intents()) > 0 {
+		if in, ok := (<-c.Intents()).Intent.(app.SetRouteOn); ok && in.Module == rt && in.Route == "a" && !in.On {
+			off = true
+		}
+	}
+	if !off {
+		t.Error("the on box asked nothing")
 	}
 }

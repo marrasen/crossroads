@@ -7,6 +7,7 @@ import (
 	"github.com/marrasen/crossroads/app"
 	"github.com/marrasen/crossroads/controller"
 	"github.com/marrasen/crossroads/engine"
+	"github.com/marrasen/crossroads/routing"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
 	"github.com/marrasen/gunim/audio/midi"
@@ -44,7 +45,11 @@ type cardList struct {
 // card is one module's card: its widgets, which are those its kind
 // has, and its learned controls' forget buttons.
 type card struct {
-	kind              show.Kind
+	kind show.Kind
+	// ons are a MIDI routes card's routes' on boxes, and routes its
+	// routes as the show has them.
+	ons               map[string]*widget.Checkbox
+	routes            []routing.Route
 	device, layout    *widget.Dropdown
 	learn             *widget.Button
 	channel, note, cc *widget.NumberField
@@ -117,6 +122,36 @@ func (c *controllers) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids
 	}
 }
 
+// paintRoutes paints a MIDI routes card's routes: each one's name, and
+// what fires it and what it does.
+func (l *cardList) paintRoutes(p *paint.Painter, f gunim.Frame, cd *card, m *show.Module, y, w float32) {
+	th := f.Theme
+	ink := widget.Ink.Get(th)
+	quiet := faded(ink, 0.55)
+	face, bold := widget.Font.Get(th), widget.BoldFont.Get(th)
+	n := face.Shape(strconv.Itoa(len(m.Routes))+" routes from midittt", 11)
+	n.Paint(p, geom.Pt(cardInset*2, y+29), quiet)
+	if len(m.Routes) == 0 {
+		msg := face.Shape("No routes. Import a midittt rig to bring its routes over.", 11)
+		msg.Paint(p, geom.Pt(cardInset*2, y+cardHead+8), quiet)
+	}
+	room := max(w-4*cardInset-40, 40)
+	for i, r := range cd.routes {
+		ry := y + cardHead + float32(i)*routeRowH
+		c := ink
+		if !r.Enabled {
+			c = quiet
+		}
+		t := bold.Shape(r.DisplayName(), 12)
+		t.PaintFaded(p, geom.Pt(cardInset*2+34, ry+4), c, room, widget.TextFade.Get(th))
+		s := face.Shape(r.Says(), 11)
+		s.PaintFaded(p, geom.Pt(cardInset*2+34, ry+21), quiet, room, widget.TextFade.Get(th))
+	}
+}
+
+// routeRowH is how tall a route's row is.
+const routeRowH = 40
+
 // The cards' measures.
 const (
 	cardHead  = 48
@@ -134,7 +169,7 @@ func (l *cardList) show(st *app.State, u *gunim.UI) {
 	var ids []string
 	for i := range st.Show.Modules {
 		m := &st.Show.Modules[i]
-		if m.Kind != show.Controller && m.Kind != show.MIDIOut && m.Kind != show.ClockIn && m.Kind != show.ClockOut {
+		if m.Kind != show.Controller && m.Kind != show.MIDIOut && m.Kind != show.ClockIn && m.Kind != show.ClockOut && m.Kind != show.Routes {
 			continue
 		}
 		ids = append(ids, m.ID)
@@ -167,7 +202,10 @@ func (l *cardList) show(st *app.State, u *gunim.UI) {
 // newCard makes module m's card.
 func (l *cardList) newCard(m *show.Module) *card {
 	id := m.ID
-	cd := &card{kind: m.Kind, forget: map[string]*widget.IconButton{}}
+	cd := &card{kind: m.Kind, forget: map[string]*widget.IconButton{}, ons: map[string]*widget.Checkbox{}}
+	if m.Kind == show.Routes {
+		return cd
+	}
 	cd.device = widget.NewDropdown(nil)
 	cd.device.OnChange = func(i int, _ *gunim.UI) gunim.Intent {
 		if i < 0 || i >= len(cd.devices) {
@@ -211,6 +249,10 @@ func (l *cardList) newCard(m *show.Module) *card {
 // follow brings card cd up to date with module m: the ports offered,
 // the settings, and a forget button for each control it learned.
 func (l *cardList) follow(cd *card, m *show.Module, u *gunim.UI) {
+	if m.Kind == show.Routes {
+		l.followRoutes(cd, m, u)
+		return
+	}
 	ports := l.ins
 	if m.Kind == show.MIDIOut || m.Kind == show.ClockOut {
 		ports = l.outs
@@ -274,8 +316,46 @@ func (l *cardList) follow(cd *card, m *show.Module, u *gunim.UI) {
 	cd.learn.Disabled = built
 }
 
+// followRoutes brings a MIDI routes card up to date: an on box for each
+// route.
+func (l *cardList) followRoutes(cd *card, m *show.Module, u *gunim.UI) {
+	cd.routes = m.Routes
+	have := map[string]bool{}
+	for _, r := range m.Routes {
+		have[r.ID] = true
+		box := cd.ons[r.ID]
+		if box == nil {
+			box = widget.NewCheckbox("")
+			id, route := m.ID, r.ID
+			box.OnChange = func(on bool, _ *gunim.UI) gunim.Intent { return app.SetRouteOn{Module: id, Route: route, On: on} }
+			cd.ons[r.ID] = box
+			if u != nil {
+				u.Insert(l, box)
+			}
+		}
+		box.SetChecked(r.Enabled, u)
+	}
+	for id, box := range cd.ons {
+		if !have[id] {
+			if u != nil {
+				u.Remove(box)
+			}
+			delete(cd.ons, id)
+		}
+	}
+}
+
 // nodes are the card's widgets, in the order its card lays them out.
 func (cd *card) nodes() []gunim.Node {
+	if cd.kind == show.Routes {
+		out := make([]gunim.Node, 0, len(cd.routes))
+		for _, r := range cd.routes {
+			if b := cd.ons[r.ID]; b != nil {
+				out = append(out, b)
+			}
+		}
+		return out
+	}
 	out := []gunim.Node{cd.device}
 	if cd.layout != nil {
 		out = append(out, cd.layout)
@@ -330,6 +410,18 @@ func (l *cardList) Layout(c gunim.Constraints, _ gunim.Frame, kids gunim.Childre
 	for _, id := range l.ids {
 		cd := l.cards[id]
 		row := y + cardHead
+		if cd.kind == show.Routes {
+			for i, r := range cd.routes {
+				if k, ok := byNode[cd.ons[r.ID]]; ok {
+					k.Layout(gunim.Tight(geom.Sz(24, 24)))
+					k.Place(geom.Pt(cardInset*2, y+cardHead+float32(i)*routeRowH+(routeRowH-24)/2))
+					done[k.Node()] = true
+				}
+			}
+			cd.height = cardHead + float32(max(len(cd.routes), 1))*routeRowH + 8
+			y += cd.height + cardGap
+			continue
+		}
 		x := float32(cardInset * 2)
 		put := func(n gunim.Node, most float32) {
 			k, ok := byNode[n]
@@ -407,6 +499,10 @@ func (l *cardList) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids gu
 		p.RRect(geom.Rc(cardInset, y, 4, cd.height), 2, paint.Solid(accent))
 		t := bold.Shape(m.Name, 14)
 		t.Paint(p, geom.Pt(cardInset*2, y+10), ink)
+		if m.Kind == show.Routes {
+			l.paintRoutes(p, f, cd, m, y, box.W)
+			continue
+		}
 		says := l.c.played.Says[id]
 		if m.Kind == show.Controller {
 			d := l.c.played.Desks[id]

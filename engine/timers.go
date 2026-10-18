@@ -123,7 +123,7 @@ func (e *Engine) playPattern(m *show.Module, cat fixtures.Catalog, live *Live) {
 	e.values[portKey{m.ID, "out"}] = l
 	p, ok := e.patterns[m.Pattern]
 	c, clocked := e.input(m.ID, "clock").(Count)
-	on := m.Value >= 0.5 || e.held[portKey{m.ID, "play"}]
+	on := m.Value >= 0.5 || e.held[portKey{m.ID, "play"}] || e.patternHeld(m.Pattern)
 	if v, wired := e.input(m.ID, "play").(float64); wired {
 		on = on || v >= 0.5
 	}

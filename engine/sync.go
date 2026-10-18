@@ -20,6 +20,7 @@ type Linker interface {
 	Start(ctx context.Context) error
 	Stop()
 	Snapshot() link.Snapshot
+	SetPlaying(playing bool)
 }
 
 // A SeratoFeed is Serato DJ Pro's decks, as package serato's service
@@ -178,7 +179,7 @@ func (e *Engine) followSerato(m *show.Module, live *Live) {
 
 // A clockIn is a MIDI clock in's port, and the follower it feeds.
 type clockIn struct {
-	port   *port
+	device string
 	reg    *tempo.Registry
 	follow *tempo.MidiClockFollower
 	events []midi.Event
@@ -186,20 +187,19 @@ type clockIn struct {
 
 func newClockIn(device string) *clockIn {
 	reg := tempo.NewRegistry()
-	c := &clockIn{port: &port{device: device, listen: true}, reg: reg, follow: tempo.NewMidiClockFollower(reg)}
+	c := &clockIn{device: device, reg: reg, follow: tempo.NewMidiClockFollower(reg)}
 	c.follow.Enable()
 	return c
 }
 
 // clockedIn runs MIDI clock in module m: the clock its port's pulses
 // make.
-func (e *Engine) clockedIn(m *show.Module, now time.Time, live *Live) {
+func (e *Engine) clockedIn(m *show.Module, live *Live) {
 	ci := e.clockIns[m.ID]
 	if ci == nil {
 		return
 	}
-	ci.port.open(e.midiPorts(), now, e.changed)
-	ci.events, _, _ = ci.port.take(ci.events[:0])
+	ci.events = append(ci.events[:0], e.hub.heard[m.Device]...)
 	for _, ev := range ci.events {
 		switch ev.Kind() {
 		case midi.KindClock:
@@ -219,7 +219,7 @@ func (e *Engine) clockedIn(m *show.Module, now time.Time, live *Live) {
 	}
 	ci.follow.Tick(time.Now())
 	var c Count
-	says := ci.port.says()
+	says := e.hub.says(m.Device, true)
 	if clock, ok := ci.reg.ClockFor(tempo.MidiClockSourceID); ok && clock.BPM > 0 {
 		c = Count{BPM: clock.BPM, Beats: tempo.BeatsAt(clock, tempo.Now()), Sure: clock.Playing}
 		state := "stopped"
@@ -236,17 +236,17 @@ func (e *Engine) clockedIn(m *show.Module, now time.Time, live *Live) {
 // A clockOut is a MIDI clock out's port, the bridge sending it clock,
 // and the clock the bridge reads, anchored afresh only as it moves.
 type clockOut struct {
-	port *port
-	out  *tempo.ClockOut
-	mu   sync.Mutex
-	at   tempo.Clock
-	have bool
+	device string
+	out    *tempo.ClockOut
+	mu     sync.Mutex
+	at     tempo.Clock
+	have   bool
 	// sendTo is the port's output, as the last tick found it.
 	sendTo MIDIOut
 }
 
 func newClockOut(device string) *clockOut {
-	c := &clockOut{port: &port{device: device}}
+	c := &clockOut{device: device}
 	c.out = tempo.NewClockOut(c.clock, c.send)
 	return c
 }
@@ -295,20 +295,16 @@ func (c *clockOut) follow(in Count, ok bool, out MIDIOut) {
 
 // clockedOut runs MIDI clock out module m: the clock wired in goes out
 // as MIDI clock, its pulses scheduled ahead on the bridge's goroutine.
-func (e *Engine) clockedOut(m *show.Module, now time.Time, live *Live) {
+func (e *Engine) clockedOut(m *show.Module, live *Live) {
 	co := e.clockOuts[m.ID]
 	if co == nil {
 		return
 	}
-	co.port.open(e.midiPorts(), now, e.changed)
-	_, _, out := co.port.take(nil)
+	out, _ := e.hub.out(m.Device)
 	in, ok := e.input(m.ID, "in").(Count)
 	co.follow(in, ok, out)
-	live.Says[m.ID] = co.port.says()
+	live.Says[m.ID] = e.hub.says(m.Device, false)
 }
 
-// stop stops the clock out's bridge and closes its port.
-func (c *clockOut) stop() {
-	c.out.Stop()
-	c.port.close()
-}
+// stop stops the clock out's bridge.
+func (c *clockOut) stop() { c.out.Stop() }
