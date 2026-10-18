@@ -433,7 +433,7 @@ func (a *App) Handle(win int, in gunim.Intent) {
 		case show.Cues:
 			m.Fade = 2
 		case show.Fader, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Level, show.Player, show.Button,
-			show.MIDIOut, show.Toggle:
+			show.MIDIOut, show.Toggle, show.Link, show.Serato, show.ClockIn, show.ClockOut:
 		}
 		s.Modules = append(s.Modules, m)
 	case AddLight:

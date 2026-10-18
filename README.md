@@ -60,6 +60,12 @@ on the beat; a **Cue list** fades to the next as GO is pressed. Each
 mixer can black out, flash every light full white for a drop, and
 hold what plays.
 
+Clocks come from elsewhere too, as midittt's did: **Ableton Link**
+follows the Link session on the network, **Serato** follows the deck
+Serato DJ Pro's crossfader favours, and **MIDI clock in** follows a
+DAW or a drum machine. **MIDI clock out** sends any clock on to gear
+that only speaks MIDI clock.
+
 Tabs drag into any arrangement, and out into windows of their own.
 Ctrl+S saves the show, Ctrl+O opens one. See
 [plans/plan.md](plans/plan.md) for what comes next.

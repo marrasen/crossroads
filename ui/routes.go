@@ -107,6 +107,7 @@ var addGroups = []struct {
 	{"Light", []show.Kind{show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView}},
 	{"Sound and beat", []show.Kind{show.AudioIn, show.Player, show.Beat, show.Tempo, show.Level, show.Pulse}},
 	{"Looks", []show.Kind{show.Look, show.Chaser, show.Cues}},
+	{"Sync", []show.Kind{show.Link, show.Serato, show.ClockIn, show.ClockOut}},
 	{"Controllers and logic", []show.Kind{show.Button, show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle}},
 }
 
@@ -153,6 +154,12 @@ func kindIcon(k show.Kind) *icon.Icon {
 		return icon.Repeat2
 	case show.Cues:
 		return icon.ListOrdered
+	case show.Link:
+		return icon.Link
+	case show.Serato:
+		return icon.Disc3
+	case show.ClockIn, show.ClockOut:
+		return icon.Clock
 	}
 	return icon.Plus
 }
@@ -239,7 +246,7 @@ func (r *routes) content(id string) gunim.Node {
 		f.OnCommit = func(v float64, _ *gunim.UI) gunim.Intent { return app.SetFade{Module: id, Fade: v} }
 		r.cueFades[id] = f
 		return padded(f)
-	case show.Lights, show.Mixer, show.StageView, show.Beat, show.Level, show.Player, show.Controller, show.MIDIOut, show.Toggle:
+	case show.Lights, show.Mixer, show.StageView, show.Beat, show.Level, show.Player, show.Controller, show.MIDIOut, show.Toggle, show.Link, show.Serato, show.ClockIn, show.ClockOut:
 	}
 	return nil
 }
@@ -523,8 +530,8 @@ func (r *routes) sync(u *gunim.UI) {
 		case show.Tempo:
 			n.Body, n.Width = 76, 240
 			n.Glow = float32(engine.Flash(r.played.Clocks[m.ID].Beats, 1)) * 0.6
-		case show.Beat:
-			if c := r.played.Clocks[m.ID]; c.BPM > 0 {
+		case show.Beat, show.Link, show.Serato, show.ClockIn:
+			if c := r.played.Clocks[m.ID]; c.BPM > 0 && c.Sure {
 				n.Glow = float32(engine.Flash(c.Beats, 1)) * 0.6
 			}
 		case show.Pulse:
@@ -555,7 +562,7 @@ func (r *routes) sync(u *gunim.UI) {
 			if r.played.Playing.Playing {
 				n.Glow = float32(engine.Flash(r.played.Clocks[m.ID].Beats, 1)) * 0.6
 			}
-		case show.Lights, show.Mixer, show.StageView:
+		case show.Lights, show.Mixer, show.StageView, show.ClockOut:
 		}
 		g.Nodes = append(g.Nodes, n)
 	}
@@ -624,6 +631,14 @@ func (r *routes) detail(m *show.Module) string {
 			return says
 		}
 		return "Opening…"
+	case show.Link, show.Serato, show.ClockIn, show.ClockOut:
+		if says := r.played.Says[m.ID]; says != "" {
+			return says
+		}
+		if m.Kind == show.ClockIn || m.Kind == show.ClockOut {
+			return "No device"
+		}
+		return "Starting…"
 	case show.Beat:
 		c := r.played.Clocks[m.ID]
 		switch {

@@ -18,8 +18,9 @@ import (
 
 // controllers is the Controllers tab: a card for each Controller, with
 // the MIDI port it listens to, its layout, a button that learns a
-// control, and each control's value as it moves; and a card for each
-// MIDI out, with the port it sends to and what it sends.
+// control, and each control's value as it moves; a card for each MIDI
+// out, with the port it sends to and what it sends; and a card for
+// each MIDI clock in and out, with its port.
 type controllers struct {
 	st     *app.State
 	played engine.Live
@@ -133,7 +134,7 @@ func (l *cardList) show(st *app.State, u *gunim.UI) {
 	var ids []string
 	for i := range st.Show.Modules {
 		m := &st.Show.Modules[i]
-		if m.Kind != show.Controller && m.Kind != show.MIDIOut {
+		if m.Kind != show.Controller && m.Kind != show.MIDIOut && m.Kind != show.ClockIn && m.Kind != show.ClockOut {
 			continue
 		}
 		ids = append(ids, m.ID)
@@ -174,6 +175,9 @@ func (l *cardList) newCard(m *show.Module) *card {
 		}
 		return app.SetDevice{Module: id, Device: cd.devices[i]}
 	}
+	if m.Kind == show.ClockIn || m.Kind == show.ClockOut {
+		return cd
+	}
 	if m.Kind == show.MIDIOut {
 		field := func(lo, hi float64) *widget.NumberField {
 			f := widget.NewNumberField(lo, hi)
@@ -208,7 +212,7 @@ func (l *cardList) newCard(m *show.Module) *card {
 // the settings, and a forget button for each control it learned.
 func (l *cardList) follow(cd *card, m *show.Module, u *gunim.UI) {
 	ports := l.ins
-	if m.Kind == show.MIDIOut {
+	if m.Kind == show.MIDIOut || m.Kind == show.ClockOut {
 		ports = l.outs
 	}
 	devices := slices.Clone(ports)
@@ -228,6 +232,9 @@ func (l *cardList) follow(cd *card, m *show.Module, u *gunim.UI) {
 		cd.device.SetItems(widget.Labels(names...))
 	}
 	cd.device.SetSelected(slices.Index(devices, m.Device), u)
+	if m.Kind == show.ClockIn || m.Kind == show.ClockOut {
+		return
+	}
 	if m.Kind == show.MIDIOut {
 		for _, f := range []struct {
 			f *widget.NumberField
@@ -386,7 +393,7 @@ func (l *cardList) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids gu
 		return
 	}
 	if len(l.ids) == 0 {
-		msg := face.Shape("No controllers yet. Add a Controller or a MIDI out on the Routes tab.", 12)
+		msg := face.Shape("No controllers yet. Add a Controller, a MIDI out or a MIDI clock on the Routes tab.", 12)
 		msg.Paint(p, geom.Pt(cardInset+8, cardGap+8), quiet)
 	}
 	for _, id := range l.ids {

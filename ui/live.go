@@ -228,7 +228,7 @@ func (l *livePage) build(w float32) (place map[gunim.Node]geom.Rect, height floa
 			triggers = append(triggers, pad{label: m.Name, sub: sub, kind: m.Kind, module: m.ID, lit: v > 0,
 				press: app.Flip{Module: m.ID}})
 		case show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Tempo,
-			show.Level, show.Pulse, show.Player, show.Controller, show.MIDIOut, show.Map, show.Every:
+			show.Level, show.Pulse, show.Player, show.Controller, show.MIDIOut, show.Map, show.Every, show.Link, show.Serato, show.ClockIn, show.ClockOut:
 		}
 	}
 	section(looks)
@@ -327,7 +327,7 @@ func padGroup(k show.Kind) string {
 	case show.Cues, show.Chaser:
 		return "Cues and chasers"
 	case show.Fader, show.Lights, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Tempo, show.Level,
-		show.Pulse, show.Player, show.Button, show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle:
+		show.Pulse, show.Player, show.Button, show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle, show.Link, show.Serato, show.ClockIn, show.ClockOut:
 	}
 	return "Buttons and toggles"
 }

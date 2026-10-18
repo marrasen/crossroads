@@ -52,7 +52,7 @@ func kindInk(th *theme.Live, k show.Kind) color.NRGBA {
 		return lookInk.Get(th)
 	case show.AudioIn:
 		return audioInk.Get(th)
-	case show.Beat, show.Tempo:
+	case show.Beat, show.Tempo, show.Link, show.Serato, show.ClockIn, show.ClockOut:
 		return clockInk.Get(th)
 	case show.Player:
 		return songInk.Get(th)
