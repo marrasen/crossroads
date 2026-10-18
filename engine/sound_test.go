@@ -95,7 +95,7 @@ func newRig(t *testing.T) *rig {
 	wire(r.beat, r.tempo)
 	wire(r.tempo, r.pulse)
 	wire(r.in, r.level)
-	opened := make(chan struct{})
+	opened := make(chan struct{}, 1)
 	r.e = New(func() {
 		select {
 		case opened <- struct{}{}:
