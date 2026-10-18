@@ -49,6 +49,7 @@ type routes struct {
 	// list of patterns.
 	timers       map[string]*timerFields
 	patternLists map[string]*widget.Dropdown
+	programLists map[string]*widget.Dropdown
 	fades        map[string]*widget.Slider
 	cueFades     map[string]*widget.NumberField
 	// heard are the sound card's inputs, listed once, as an Audio in
@@ -75,7 +76,8 @@ func newRoutes() *routes {
 		inputs: map[string]*widget.Dropdown{}, taps: map[string]*widget.Button{}, bpms: map[string]*widget.NumberField{}, follows: map[string]*widget.Checkbox{},
 		everys: map[string]*widget.Segmented{}, maps: map[string]*mapFields{}, levels: map[string]map[string]*widget.Slider{},
 		fades: map[string]*widget.Slider{}, cueFades: map[string]*widget.NumberField{},
-		timers: map[string]*timerFields{}, patternLists: map[string]*widget.Dropdown{}, ports: map[string][2][]engine.Port{}}
+		timers: map[string]*timerFields{}, patternLists: map[string]*widget.Dropdown{},
+		programLists: map[string]*widget.Dropdown{}, ports: map[string][2][]engine.Port{}}
 	r.view.Content = r.content
 	r.view.Accepts = func(from, to graph.End) (bool, string) {
 		if r.st == nil {
@@ -112,7 +114,7 @@ var addGroups = []struct {
 }{
 	{"Light", []show.Kind{show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView}},
 	{"Sound and beat", []show.Kind{show.AudioIn, show.Player, show.Beat, show.Tempo, show.Level, show.Pulse}},
-	{"Looks", []show.Kind{show.Look, show.Chaser, show.Cues, show.Pattern}},
+	{"Looks", []show.Kind{show.Look, show.Chaser, show.Cues, show.Pattern, show.Effect}},
 	{"Sync", []show.Kind{show.Link, show.Serato, show.ClockIn, show.ClockOut}},
 	{"Controllers and logic", []show.Kind{show.Routes, show.Timer, show.Button, show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle}},
 }
@@ -162,6 +164,8 @@ func kindIcon(k show.Kind) *icon.Icon {
 		return icon.ListOrdered
 	case show.Routes:
 		return icon.Route
+	case show.Effect:
+		return icon.Sparkles
 	case show.Timer:
 		return icon.Timer
 	case show.Pattern:
@@ -245,6 +249,8 @@ func (r *routes) content(id string) gunim.Node {
 		return r.timerContent(m)
 	case show.Pattern:
 		return r.patternContent(m)
+	case show.Effect:
+		return r.programContent(m)
 	case show.Chaser:
 		sg := widget.NewSegmented(beatNames...)
 		sg.SetSelected(beatIndex(m.Every), nil)
@@ -332,6 +338,41 @@ func (r *routes) followPatterns(d *widget.Dropdown, m *show.Module, u *gunim.UI)
 	}
 	if len(names) == 0 {
 		names = []string{"No patterns yet"}
+	}
+	d.SetItems(widget.Labels(names...))
+	d.SetSelected(at, u)
+}
+
+// programContent is an Effect's box: the programme it plays, of the
+// show's.
+func (r *routes) programContent(m *show.Module) gunim.Node {
+	id := m.ID
+	d := widget.NewDropdown(nil)
+	d.OnChange = func(i int, _ *gunim.UI) gunim.Intent {
+		ps := r.st.Show.Programs
+		if i < 0 || i >= len(ps) {
+			return nil
+		}
+		return app.SetProgram{Module: id, Program: ps[i].ID}
+	}
+	r.programLists[id] = d
+	r.followPrograms(d, m, nil)
+	return padded(d)
+}
+
+// followPrograms offers the show's effect programmes in d, m's chosen.
+func (r *routes) followPrograms(d *widget.Dropdown, m *show.Module, u *gunim.UI) {
+	ps := r.st.Show.Programs
+	names := make([]string, len(ps))
+	at := -1
+	for i, p := range ps {
+		names[i] = p.DisplayName()
+		if p.ID == m.Program {
+			at = i
+		}
+	}
+	if len(names) == 0 {
+		names = []string{"No effects yet"}
 	}
 	d.SetItems(widget.Labels(names...))
 	d.SetSelected(at, u)
@@ -567,6 +608,10 @@ func (r *routes) show(s *app.State, u *gunim.UI) {
 	for id, d := range r.patternLists {
 		r.followPatterns(d, s.Show.Module(id), u)
 	}
+	maps.DeleteFunc(r.programLists, func(id string, _ *widget.Dropdown) bool { return s.Show.Module(id) == nil })
+	for id, d := range r.programLists {
+		r.followPrograms(d, s.Show.Module(id), u)
+	}
 	maps.DeleteFunc(r.cueFades, func(id string, _ *widget.NumberField) bool { return s.Show.Module(id) == nil })
 	for id, f := range r.cueFades {
 		if u == nil || !u.HasFocus(f) {
@@ -653,7 +698,7 @@ func (r *routes) sync(u *gunim.UI) {
 			n.Body, n.Width = 40, 220
 		case show.Timer:
 			n.Body, n.Width = 76, 260
-		case show.Pattern:
+		case show.Pattern, show.Effect:
 			n.Body, n.Width = 40, 220
 			n.Glow = float32(r.value(m)) * 0.6
 		case show.Controller, show.MIDIOut:
@@ -813,6 +858,16 @@ func (r *routes) detail(m *show.Module) string {
 			text += ", running"
 		}
 		return text
+	case show.Effect:
+		for _, p := range r.st.Show.Programs {
+			if p.ID == m.Program {
+				if r.value(m) > 0 {
+					return "▶ " + p.DisplayName()
+				}
+				return p.DisplayName()
+			}
+		}
+		return "No effect chosen"
 	case show.Pattern:
 		for _, p := range r.st.Show.Patterns {
 			if p.ID == m.Pattern {

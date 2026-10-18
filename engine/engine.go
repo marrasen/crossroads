@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/marrasen/crossroads/controller"
+	"github.com/marrasen/crossroads/fx"
 	"github.com/marrasen/crossroads/pattern"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim-dmx/artnet"
@@ -141,6 +142,8 @@ func Ports(s *show.Show, m *show.Module) (ins, outs []Port) {
 		return []Port{{"clock", "Clock", Clock}, {"play", "Play", Value}}, []Port{{"out", "Light", Light}}
 	case show.Routes:
 		return []Port{{"clock", "Clock", Clock}}, []Port{{"out", "Light", Light}, {"fired", "Fired", Trigger}}
+	case show.Effect:
+		return []Port{{"go", "Go", Trigger}, {"clock", "Clock", Clock}}, []Port{{"out", "Light", Light}}
 	}
 	return nil, nil
 }
@@ -321,6 +324,10 @@ type Engine struct {
 	// routes module's routing.
 	hub     hub
 	routers map[string]*router
+	// effects are each Effect's programmes playing, and programs the
+	// show's effect programmes, by ID.
+	effects  map[string]*fxRunner
+	programs map[string]fx.Program
 }
 
 func (e *Engine) now() time.Time {
@@ -357,7 +364,8 @@ func New(changed func()) *Engine {
 		desks: map[string]*desk{}, senders: map[string]*sender{}, everys: map[string]int64{}, toggles: map[string]bool{},
 		steppers: map[string]*stepper{}, held: map[portKey]bool{}, frozen: map[string]dmx.Universe{}, layerOf: map[*mix.Layer]string{},
 		clockIns: map[string]*clockIn{}, clockOuts: map[string]*clockOut{}, sync: syncs{deck: -1},
-		timers: map[string]*timer{}, patterns: map[string]pattern.Pattern{}, hub: newHub(), routers: map[string]*router{}}
+		timers: map[string]*timer{}, patterns: map[string]pattern.Pattern{}, hub: newHub(), routers: map[string]*router{},
+		effects: map[string]*fxRunner{}, programs: map[string]fx.Program{}}
 }
 
 // Set runs show s from now on: its modules in its wires' order, with a
@@ -385,11 +393,18 @@ func (e *Engine) Set(s show.Show) {
 	for _, p := range e.s.Patterns {
 		e.patterns[p.ID] = p
 	}
+	clear(e.programs)
+	for _, p := range e.s.Programs {
+		e.programs[p.ID] = p
+	}
 	keep := map[string]bool{}
 	for _, m := range e.s.Modules {
 		keep[m.ID] = true
 		switch m.Kind {
-		case show.Lights, show.Look, show.Chaser, show.Cues, show.Pattern:
+		case show.Lights, show.Look, show.Chaser, show.Cues, show.Pattern, show.Effect:
+			if m.Kind == show.Effect && e.effects[m.ID] == nil {
+				e.effects[m.ID] = &fxRunner{}
+			}
 			if e.layers[m.ID] == nil {
 				e.layers[m.ID] = mix.NewLayer()
 				e.layerOf[e.layers[m.ID]] = m.ID
@@ -484,6 +499,7 @@ func (e *Engine) Set(s show.Show) {
 			delete(e.layers, id)
 			delete(e.layerOf, l)
 			delete(e.steppers, id)
+			delete(e.effects, id)
 		}
 	}
 	for k := range e.held {
@@ -806,6 +822,8 @@ func (e *Engine) Tick() Live {
 			e.playPattern(m, cat, &live)
 		case show.Routes:
 			e.route(m, cat, now, &live)
+		case show.Effect:
+			e.effect(m, cat, now, &live)
 		case show.Button:
 			fired := e.pressed[id]
 			e.values[portKey{id, "out"}] = fired
