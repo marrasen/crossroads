@@ -8,10 +8,12 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/marrasen/crossroads/controller"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim-dmx/artnet"
 	"github.com/marrasen/gunim-dmx/dmx"
@@ -48,6 +50,14 @@ type Port struct {
 	ID, Name string
 	Signal   Signal
 }
+
+// lightPrefix starts the ID of a controller's light's input.
+const lightPrefix = "light:"
+
+// Back reports whether p is an input that feeds back, as a
+// controller's light: it may close a loop, and hears what is wired
+// into it a tick late.
+func (p Port) Back() bool { return strings.HasPrefix(p.ID, lightPrefix) }
 
 // mixerIns is how many light inputs a mixer has.
 const mixerIns = 4
@@ -93,6 +103,26 @@ func Ports(s *show.Show, m *show.Module) (ins, outs []Port) {
 			[]Port{{"audio", "Audio", Audio}, {"clock", "Clock", Clock}, {"start", "Song starts", Trigger}, {"end", "Song ends", Trigger}, {"bar", "Each bar", Trigger}}
 	case show.Button:
 		return nil, []Port{{"out", "Pressed", Trigger}}
+	case show.Controller:
+		for _, c := range controller.ControlsOf(m) {
+			if c.Kind == show.Press {
+				outs = append(outs, Port{c.ID, c.Name, Trigger})
+				if c.Lit {
+					ins = append(ins, Port{lightPrefix + c.ID, "Light " + c.Name, Value})
+				}
+				continue
+			}
+			outs = append(outs, Port{c.ID, c.Name, Value})
+		}
+		return ins, outs
+	case show.MIDIOut:
+		return []Port{{"note", "Note", Trigger}, {"value", "Controller", Value}}, nil
+	case show.Map:
+		return []Port{{"in", "Value", Value}}, []Port{{"out", "Value", Value}}
+	case show.Every:
+		return []Port{{"in", "Clock", Clock}}, []Port{{"out", "Every", Trigger}}
+	case show.Toggle:
+		return []Port{{"in", "Flip", Trigger}}, []Port{{"out", "On or off", Value}}
 	}
 	return nil, nil
 }
@@ -129,7 +159,7 @@ func CanJoin(s *show.Show, from, to show.End) (ok bool, why string) {
 		return false, "A " + string(a.Signal) + " output joins " + string(a.Signal) + " inputs only."
 	case slices.ContainsFunc(s.Wires, func(w show.Wire) bool { return w.To == to }):
 		return false, "That input is fed already. Pull its wire out first."
-	case feeds(s, to.Module, from.Module):
+	case !b.Back() && feeds(s, to.Module, from.Module):
 		return false, "That would feed the module its own output."
 	}
 	return true, ""
@@ -169,11 +199,13 @@ type Live struct {
 	Outs map[string]dmx.State
 	// Clocks are what each Beat and Tempo counts, by module.
 	Clocks map[string]Count
-	// Ears are what each Audio in listens to, or why it does not, by
-	// module.
-	Ears map[string]string
+	// Says are what each Audio in listens to, and each MIDI out sends
+	// to, or why not, by module.
+	Says map[string]string
 	// Playing is what the playlist is doing.
 	Playing Playing
+	// Desks are what each Controller shows, by module.
+	Desks map[string]Desk
 }
 
 // An Engine runs a show's modules.
@@ -211,6 +243,14 @@ type Engine struct {
 	rate    int
 	// pressed are the Buttons pressed since the last tick.
 	pressed map[string]bool
+	// desks are the Controllers', senders the MIDI outs', everys the
+	// beat each Every counted last and toggles each Toggle's state, by
+	// module; learnt the controls learned.
+	desks   map[string]*desk
+	senders map[string]*sender
+	everys  map[string]int64
+	toggles map[string]bool
+	learnt  []Learnt
 
 	// Listen opens an Audio in's input, [Listen] where it is nil, and
 	// now tells the time, [time.Now] where it is nil. Tests set them
@@ -220,6 +260,9 @@ type Engine struct {
 	// Deck plays the playlist; with none, nothing plays. Set it before
 	// the first Set; Close closes it.
 	Deck Deck
+	// MIDI opens the MIDI ports, the system's where it is nil. Set it
+	// before the first Set.
+	MIDI MIDIPorts
 }
 
 func (e *Engine) now() time.Time {
@@ -252,7 +295,8 @@ type portKey struct {
 func New(changed func()) *Engine {
 	return &Engine{layers: map[string]*mix.Layer{}, mixers: map[string]*mix.Mixer{}, heard: map[string][]*mix.Layer{}, outs: map[string]*out{},
 		values: map[portKey]any{}, changed: changed, ears: map[string]*ear{}, follow: map[string]*follower{},
-		tempos: map[string]*tempo{}, levels: map[string]float64{}, pressed: map[string]bool{}, bar: math.MinInt64}
+		tempos: map[string]*tempo{}, levels: map[string]float64{}, pressed: map[string]bool{}, bar: math.MinInt64,
+		desks: map[string]*desk{}, senders: map[string]*sender{}, everys: map[string]int64{}, toggles: map[string]bool{}}
 }
 
 // Set runs show s from now on: its modules in its wires' order, with a
@@ -312,7 +356,31 @@ func (e *Engine) Set(s show.Show) {
 			}
 			a.open(listen, e.changed)
 			e.ears[m.ID] = a
-		case show.Fader, show.StageView, show.Beat, show.Tempo, show.Level, show.Pulse, show.Player, show.Button:
+		case show.Controller:
+			d := e.desks[m.ID]
+			if d != nil && d.port.device == m.Device {
+				continue
+			}
+			if d != nil {
+				d.port.close()
+			} else {
+				d = &desk{values: map[string]float64{}, pos: map[string]float64{}, caught: map[string]bool{}, held: map[string]bool{},
+					fired: map[string]bool{}, sent: map[string]int{}}
+				e.desks[m.ID] = d
+			}
+			// Another device: its lights and its sliders start afresh.
+			d.port, d.ch = &port{device: m.Device, listen: true}, -1
+			clear(d.sent)
+			clear(d.caught)
+		case show.MIDIOut:
+			if sd := e.senders[m.ID]; sd != nil && sd.port.device == m.Device {
+				continue
+			} else if sd != nil {
+				sd.port.close()
+			}
+			e.senders[m.ID] = &sender{port: &port{device: m.Device}, cc: -1}
+		case show.Fader, show.StageView, show.Beat, show.Tempo, show.Level, show.Pulse, show.Player, show.Button,
+			show.Map, show.Every, show.Toggle:
 		}
 	}
 	for id := range e.layers {
@@ -344,6 +412,28 @@ func (e *Engine) Set(s show.Show) {
 			e.Deck.Stop()
 		}
 		e.song, e.state, e.deckErr = "", DeckState{}, ""
+	}
+	for id, d := range e.desks {
+		if m := e.s.Module(id); m == nil || m.Kind != show.Controller {
+			d.port.close()
+			delete(e.desks, id)
+		}
+	}
+	for id, sd := range e.senders {
+		if m := e.s.Module(id); m == nil || m.Kind != show.MIDIOut {
+			sd.port.close()
+			delete(e.senders, id)
+		}
+	}
+	for id := range e.everys {
+		if !keep[id] {
+			delete(e.everys, id)
+		}
+	}
+	for id := range e.toggles {
+		if !keep[id] {
+			delete(e.toggles, id)
+		}
 	}
 	for id := range e.follow {
 		if !keep[id] {
@@ -420,7 +510,7 @@ func order(s *show.Show) []string {
 		}
 		busy[id] = true
 		for _, w := range s.Wires {
-			if w.To.Module == id {
+			if w.To.Module == id && !back(s, w.To) {
 				visit(w.From.Module)
 			}
 		}
@@ -432,6 +522,13 @@ func order(s *show.Show) []string {
 		visit(m.ID)
 	}
 	return out
+}
+
+// back reports whether input e of s feeds back, and so does not put
+// what feeds it first.
+func back(s *show.Show, e show.End) bool {
+	p, ok := PortOf(s, e, false)
+	return ok && p.Back()
 }
 
 // SetValue sets a fader's value, or a mixer's grand master, at once,
@@ -460,7 +557,8 @@ func (e *Engine) Tick() Live {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	cat := e.s.Catalog()
-	live := Live{Values: map[string]float64{}, Outs: map[string]dmx.State{}, Clocks: map[string]Count{}, Ears: map[string]string{}}
+	live := Live{Values: map[string]float64{}, Outs: map[string]dmx.State{}, Clocks: map[string]Count{}, Says: map[string]string{},
+		Desks: map[string]Desk{}}
 	staged := false
 	now := e.now()
 	var dt float64
@@ -526,6 +624,12 @@ func (e *Engine) Tick() Live {
 			e.sound(m, dt, &live)
 		case show.Player:
 			e.player(m, &live)
+		case show.Controller:
+			e.control(m, now, &live)
+		case show.MIDIOut:
+			e.send(m, now, &live)
+		case show.Map, show.Every, show.Toggle:
+			e.logic(m, &live)
 		case show.Button:
 			fired := e.pressed[id]
 			e.values[portKey{id, "out"}] = fired
@@ -579,5 +683,13 @@ func (e *Engine) Close() {
 	if e.Deck != nil {
 		_ = e.Deck.Close()
 		e.Deck = nil
+	}
+	for id, d := range e.desks {
+		d.port.close()
+		delete(e.desks, id)
+	}
+	for id, sd := range e.senders {
+		sd.port.close()
+		delete(e.senders, id)
 	}
 }

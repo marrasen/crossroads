@@ -39,6 +39,7 @@ type routes struct {
 	bpms    map[string]*widget.NumberField
 	follows map[string]*widget.Checkbox
 	everys  map[string]*widget.Segmented
+	maps    map[string]*mapFields
 	// heard are the sound card's inputs, listed once, as an Audio in
 	// first asks.
 	heard  []capture.Device
@@ -61,7 +62,7 @@ var devices = []struct{ id, name string }{
 func newRoutes() *routes {
 	r := &routes{view: graph.NewView(), faders: map[string]*widget.Slider{}, devices: map[string]*widget.Dropdown{},
 		inputs: map[string]*widget.Dropdown{}, taps: map[string]*widget.Button{}, bpms: map[string]*widget.NumberField{}, follows: map[string]*widget.Checkbox{},
-		everys: map[string]*widget.Segmented{}, ports: map[string][2][]engine.Port{}}
+		everys: map[string]*widget.Segmented{}, maps: map[string]*mapFields{}, ports: map[string][2][]engine.Port{}}
 	r.view.Content = r.content
 	r.view.Accepts = func(from, to graph.End) (bool, string) {
 		if r.st == nil {
@@ -98,7 +99,7 @@ var addGroups = []struct {
 }{
 	{"Light", []show.Kind{show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView}},
 	{"Sound and beat", []show.Kind{show.AudioIn, show.Player, show.Beat, show.Tempo, show.Level, show.Pulse}},
-	{"Triggers", []show.Kind{show.Button}},
+	{"Controllers and logic", []show.Kind{show.Button, show.Controller, show.MIDIOut, show.Map, show.Every, show.Toggle}},
 }
 
 // kindIcon is the add menu's icon for a module of kind k.
@@ -128,6 +129,16 @@ func kindIcon(k show.Kind) *icon.Icon {
 		return icon.Music
 	case show.Button:
 		return icon.CirclePlay
+	case show.Controller:
+		return icon.Gamepad2
+	case show.MIDIOut:
+		return icon.Send
+	case show.Map:
+		return icon.Spline
+	case show.Every:
+		return icon.Repeat
+	case show.Toggle:
+		return icon.ToggleRight
 	}
 	return icon.Plus
 }
@@ -187,9 +198,78 @@ func (r *routes) content(id string) gunim.Node {
 		b := widget.NewButton("Press")
 		b.OnClick = widget.Sends(app.Press{Module: id})
 		return padded(b)
-	case show.Lights, show.Mixer, show.StageView, show.Beat, show.Level, show.Player:
+	case show.Every:
+		sg := widget.NewSegmented(beatNames...)
+		sg.SetSelected(beatIndex(m.Every), nil)
+		sg.OnChange = func(i int, _ *gunim.UI) gunim.Intent { return app.SetEvery{Module: id, Every: beatCounts[i]} }
+		r.everys[id] = sg
+		return padded(sg)
+	case show.Map:
+		return r.mapContent(m)
+	case show.Lights, show.Mixer, show.StageView, show.Beat, show.Level, show.Player, show.Controller, show.MIDIOut, show.Toggle:
 	}
 	return nil
+}
+
+// The beats an Every offers to fire every, and what its buttons say.
+var (
+	beatCounts = []float64{0.5, 1, 2, 4, 8, 16}
+	beatNames  = []string{"½", "1", "2", "4", "8", "16"}
+)
+
+// beatIndex is which of the counts every is, 4 where it is none.
+func beatIndex(every float64) int {
+	if i := slices.Index(beatCounts, every); i >= 0 {
+		return i
+	}
+	return slices.Index(beatCounts, 4)
+}
+
+// mapContent is a Map's box: the range it maps from, the range it maps
+// to, and whether it turns the value over.
+func (r *routes) mapContent(m *show.Module) gunim.Node {
+	id := m.ID
+	fields := [4]*widget.NumberField{}
+	invert := widget.NewCheckbox("Turn over")
+	send := func() gunim.Intent {
+		return app.SetMap{Module: id, From: [2]float64{fields[0].Value(), fields[1].Value()},
+			To: [2]float64{fields[2].Value(), fields[3].Value()}, Invert: invert.Checked()}
+	}
+	for i := range fields {
+		f := widget.NewNumberField(0, 1)
+		f.Decimals, f.Increment = 2, 0.05
+		f.OnCommit = func(float64, *gunim.UI) gunim.Intent { return send() }
+		fields[i] = f
+	}
+	invert.OnChange = func(bool, *gunim.UI) gunim.Intent { return send() }
+	r.maps[id] = &mapFields{fields: fields, invert: invert}
+	r.maps[id].set(m, nil)
+	from, to := widget.NewLabel("From"), widget.NewLabel("to")
+	return padded(widget.NewWrap(from, widget.NewSized(fields[0], 64, 0), widget.NewSized(fields[1], 64, 0), invert,
+		to, widget.NewSized(fields[2], 64, 0), widget.NewSized(fields[3], 64, 0)))
+}
+
+// mapFields are a Map box's fields.
+type mapFields struct {
+	fields [4]*widget.NumberField
+	invert *widget.Checkbox
+}
+
+// set shows module m's map, but in a field being typed.
+func (f *mapFields) set(m *show.Module, u *gunim.UI) {
+	from, to := m.From, m.To
+	if from == [2]float64{} {
+		from = [2]float64{0, 1}
+	}
+	if to == [2]float64{} {
+		to = [2]float64{0, 1}
+	}
+	for i, v := range []float64{from[0], from[1], to[0], to[1]} {
+		if u == nil || !u.HasFocus(f.fields[i]) {
+			f.fields[i].SetValue(v, u)
+		}
+	}
+	f.invert.SetChecked(m.Invert, u)
 }
 
 // listInputs lists the sound card's inputs. Tests put a list of their
@@ -293,8 +373,16 @@ func (r *routes) show(s *app.State, u *gunim.UI) {
 	}
 	for id, sg := range r.everys {
 		if m := s.Show.Module(id); m != nil {
-			sg.SetSelected(everyIndex(m.Every), u)
+			if m.Kind == show.Every {
+				sg.SetSelected(beatIndex(m.Every), u)
+			} else {
+				sg.SetSelected(everyIndex(m.Every), u)
+			}
 		}
+	}
+	maps.DeleteFunc(r.maps, func(id string, _ *mapFields) bool { return s.Show.Module(id) == nil })
+	for id, f := range r.maps {
+		f.set(s.Show.Module(id), u)
 	}
 	r.sync(u)
 }
@@ -304,7 +392,7 @@ func (r *routes) show(s *app.State, u *gunim.UI) {
 // done.
 func (r *routes) live(l engine.Live, u *gunim.UI) {
 	same := maps.Equal(l.Values, r.played.Values) && maps.Equal(l.Outs, r.played.Outs) &&
-		maps.Equal(l.Clocks, r.played.Clocks) && maps.Equal(l.Ears, r.played.Ears)
+		maps.Equal(l.Clocks, r.played.Clocks) && maps.Equal(l.Says, r.played.Says)
 	r.played = l
 	if same {
 		return
@@ -359,6 +447,15 @@ func (r *routes) sync(u *gunim.UI) {
 		case show.Button:
 			n.Body = 36
 			n.Glow = float32(r.value(m)) * 0.8
+		case show.Every:
+			n.Body, n.Width = 36, 220
+			n.Glow = float32(r.value(m)) * 0.8
+		case show.Toggle:
+			n.Glow = float32(r.value(m)) * 0.6
+		case show.Map:
+			n.Body, n.Width = 84, 260
+			n.Glow = float32(r.value(m)) * 0.4
+		case show.Controller, show.MIDIOut:
 		case show.Player:
 			if r.played.Playing.Playing {
 				n.Glow = float32(engine.Flash(r.played.Clocks[m.ID].Beats, 1)) * 0.6
@@ -428,7 +525,7 @@ func (r *routes) detail(m *show.Module) string {
 	case show.StageView:
 		return "On the Stage tab"
 	case show.AudioIn:
-		if says, ok := r.played.Ears[m.ID]; ok {
+		if says, ok := r.played.Says[m.ID]; ok {
 			return says
 		}
 		return "Opening…"
@@ -466,6 +563,29 @@ func (r *routes) detail(m *show.Module) string {
 		return g.Title
 	case show.Button:
 		return "Fires a trigger"
+	case show.Controller:
+		d := r.played.Desks[m.ID]
+		if d.Says == "" {
+			return "No device"
+		}
+		return d.Says
+	case show.MIDIOut:
+		if says := r.played.Says[m.ID]; says != "" {
+			return says
+		}
+		return "No device"
+	case show.Map:
+		return strconv.Itoa(int(r.value(m)*100+0.5)) + "%"
+	case show.Every:
+		if m.Every == 1 {
+			return "Every beat"
+		}
+		return "Every " + strconv.FormatFloat(beatCounts[beatIndex(m.Every)], 'f', -1, 64) + " beats"
+	case show.Toggle:
+		if r.value(m) > 0 {
+			return "On"
+		}
+		return "Off"
 	case show.Pulse:
 		every := m.Every
 		if every <= 0 {
