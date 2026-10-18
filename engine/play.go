@@ -212,12 +212,16 @@ func (e *Engine) playlist() {
 	}
 	if st.Ended && !was.Ended {
 		e.ev.end = true
-		if i := e.songIndex(e.song); i >= 0 && i+1 < len(e.s.Songs) && e.load(e.s.Songs[i+1].ID) {
-			e.play()
-		} else {
-			e.Deck.Stop()
-			e.state = DeckState{}
+		// On to the next song that will play: a song whose file is gone
+		// is passed over, as the show goes on.
+		for i := e.songIndex(e.song) + 1; i > 0 && i < len(e.s.Songs); i++ {
+			if e.load(e.s.Songs[i].ID) {
+				e.play()
+				return
+			}
 		}
+		e.Deck.Stop()
+		e.state = DeckState{}
 		return
 	}
 	if !st.Playing {

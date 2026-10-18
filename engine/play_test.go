@@ -183,6 +183,20 @@ func TestASongThatWillNotLoadSaysWhy(t *testing.T) {
 	}
 }
 
+// TestASongThatWillNotLoadIsPassedOver as the playlist goes on.
+func TestASongThatWillNotLoadIsPassedOver(t *testing.T) {
+	r := newDeckRig(t)
+	r.s.Songs[1].Path = "gone.wav"
+	r.e.Set(r.s)
+	r.e.Transport(Play)
+	for range 5 * 40 {
+		r.tick()
+	}
+	if live, _ := r.tick(); live.Playing.Song != r.s.Songs[2].ID || !live.Playing.Playing {
+		t.Errorf("after a, with b gone, the player plays %+v", live.Playing)
+	}
+}
+
 // TestASongTakenOutStops, the playlist going on with nothing chosen.
 func TestASongTakenOutStops(t *testing.T) {
 	r := newDeckRig(t)
