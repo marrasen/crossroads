@@ -70,11 +70,22 @@ const (
 	DMXOut Kind = "dmxout"
 	// StageView shows a universe on the Stage tab.
 	StageView Kind = "stage"
+	// AudioIn listens to a sound card's input.
+	AudioIn Kind = "audioin"
+	// Beat follows the beat of sound, as a clock.
+	Beat Kind = "beat"
+	// Tempo is a clock of its own, tapped or typed in, or following the
+	// clock wired into it.
+	Tempo Kind = "tempo"
+	// Level is how loud sound is, as a value.
+	Level Kind = "level"
+	// Pulse is a value that flashes on the beat of a clock and fades.
+	Pulse Kind = "pulse"
 )
 
 // Kinds are the kinds of module, in the order the Routes tab offers
 // them.
-var Kinds = []Kind{Fader, Lights, Mixer, DMXOut, StageView}
+var Kinds = []Kind{Fader, Lights, Mixer, DMXOut, StageView, AudioIn, Beat, Tempo, Level, Pulse}
 
 // Title is what a module of kind k is called.
 func (k Kind) Title() string {
@@ -89,6 +100,16 @@ func (k Kind) Title() string {
 		return "DMX out"
 	case StageView:
 		return "Stage view"
+	case AudioIn:
+		return "Audio in"
+	case Beat:
+		return "Beat"
+	case Tempo:
+		return "Tempo"
+	case Level:
+		return "Level"
+	case Pulse:
+		return "Pulse"
 	}
 	return string(k)
 }
@@ -108,6 +129,15 @@ type Module struct {
 	Lights []string `json:"lights,omitempty"`
 	// Out is where a DMX out sends.
 	Out Output `json:"out,omitzero"`
+	// Input is the sound card input an Audio in listens to, by its
+	// ID, "" for the system's default.
+	Input string `json:"input,omitempty"`
+	// BPM is a Tempo's own tempo, which it plays where Manual is set or
+	// no clock is wired into it.
+	BPM    float64 `json:"bpm,omitempty"`
+	Manual bool    `json:"manual,omitempty"`
+	// Every is how many beats a Pulse flashes every, 1 where it is 0.
+	Every float64 `json:"every,omitempty"`
 }
 
 // An Output is a DMX box a DMX out sends to.

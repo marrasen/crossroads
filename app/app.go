@@ -7,6 +7,7 @@ package app
 import (
 	"context"
 	"log"
+	"math"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -83,6 +84,23 @@ type (
 	SetOutput struct {
 		Module string
 		Out    show.Output
+	}
+	// Tap taps Tempo Module's beat: the beat falls on the tap, and taps
+	// a steady gap apart set its tempo, which it then plays.
+	Tap struct{ Module string }
+	// SetTempo has Tempo Module play BPM, where Manual says, or follow
+	// the clock wired into it.
+	SetTempo struct {
+		Module string
+		BPM    float64
+		Manual bool
+	}
+	// SetInput has Audio in Module listen to sound card input Input.
+	SetInput struct{ Module, Input string }
+	// SetEvery has Pulse Module flash every Every beats.
+	SetEvery struct {
+		Module string
+		Every  float64
 	}
 	// Save saves the show, asking where for one never saved.
 	Save struct{}
@@ -271,7 +289,11 @@ func (a *App) Handle(win int, in gunim.Intent) {
 			for _, p := range s.Rig.Lights {
 				m.Lights = append(m.Lights, p.ID)
 			}
-		case show.Fader, show.DMXOut, show.StageView:
+		case show.Tempo:
+			m.BPM = 120
+		case show.Pulse:
+			m.Every = 1
+		case show.Fader, show.DMXOut, show.StageView, show.AudioIn, show.Beat, show.Level:
 		}
 		s.Modules = append(s.Modules, m)
 	case AddLight:
@@ -294,6 +316,33 @@ func (a *App) Handle(win int, in gunim.Intent) {
 		if m := s.Module(in.Module); m != nil {
 			m.Out = in.Out
 		}
+	case Tap:
+		m := s.Module(in.Module)
+		if m == nil || m.Kind != show.Tempo {
+			return
+		}
+		bpm, ok := a.eng.Tap(in.Module)
+		if !ok {
+			// A first tap only puts the beat on it; the show is the
+			// same.
+			return
+		}
+		m.BPM, m.Manual = clampBPM(bpm), true
+	case SetTempo:
+		if m := s.Module(in.Module); m != nil {
+			if in.BPM > 0 {
+				m.BPM = clampBPM(in.BPM)
+			}
+			m.Manual = in.Manual
+		}
+	case SetInput:
+		if m := s.Module(in.Module); m != nil {
+			m.Input = in.Input
+		}
+	case SetEvery:
+		if m := s.Module(in.Module); m != nil && in.Every > 0 {
+			m.Every = in.Every
+		}
 	case graph.Change:
 		if !a.graphChange(&s, in) {
 			return
@@ -314,6 +363,18 @@ func (a *App) Handle(win int, in gunim.Intent) {
 		return
 	}
 	a.setShow(s)
+}
+
+// The tempos a Tempo plays between.
+const (
+	MinBPM = 30.0
+	MaxBPM = 300.0
+)
+
+// clampBPM is bpm, within the tempos a Tempo plays, to a tenth of a
+// beat a minute.
+func clampBPM(bpm float64) float64 {
+	return math.Round(min(max(bpm, MinBPM), MaxBPM)*10) / 10
 }
 
 // setShow makes s the show: the engine plays it, it is marked unsaved,

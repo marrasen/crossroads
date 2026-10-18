@@ -1,8 +1,11 @@
 package app
 
 import (
+	"errors"
 	"testing"
+	"time"
 
+	"github.com/marrasen/crossroads/engine"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/widget/dock"
@@ -145,5 +148,58 @@ func TestAWiresOutputEndMoves(t *testing.T) {
 		if w.ID == id && w.From.Module != green {
 			t.Errorf("the wire still runs from %s", w.From.Module)
 		}
+	}
+}
+
+// TestTapsSetATemposTempo: a first tap changes nothing kept; taps a
+// steady gap apart set its tempo and hold it there, which the follow
+// box lets go of again.
+func TestTapsSetATemposTempo(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	a.Handle(0, AddModule{Kind: show.Tempo})
+	m := named(t, a, "Tempo")
+	if m.BPM != 120 || m.Manual {
+		t.Fatalf("a new Tempo plays %v, manual %v", m.BPM, m.Manual)
+	}
+	id := m.ID
+	now := time.Unix(1000, 0)
+	a.eng.Now = func() time.Time { return now }
+	a.st.Unsaved = false
+	a.Handle(0, Tap{Module: id})
+	if a.st.Unsaved {
+		t.Error("a first tap changed the show")
+	}
+	now = now.Add(600 * time.Millisecond)
+	a.Handle(0, Tap{Module: id})
+	if m := named(t, a, "Tempo"); m.BPM != 100 || !m.Manual {
+		t.Errorf("taps 0.6 s apart set %v, manual %v; want 100, manual", m.BPM, m.Manual)
+	}
+	a.Handle(0, SetTempo{Module: id, Manual: false})
+	if m := named(t, a, "Tempo"); m.BPM != 100 || m.Manual {
+		t.Errorf("let go, the Tempo plays %v, manual %v", m.BPM, m.Manual)
+	}
+	a.Handle(0, SetTempo{Module: id, BPM: 999, Manual: true})
+	if m := named(t, a, "Tempo"); m.BPM != MaxBPM {
+		t.Errorf("typed 999, the Tempo plays %v", m.BPM)
+	}
+}
+
+// TestAPulseAndAnAudioInKeepTheirSettings: what a Pulse flashes every,
+// and the input an Audio in hears, are kept; a length of no beats is
+// not.
+func TestAPulseAndAnAudioInKeepTheirSettings(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	a.eng.Listen = func(string) (engine.Listener, error) { return nil, errors.New("no sound card in a test") }
+	a.Handle(0, AddModule{Kind: show.Pulse})
+	a.Handle(0, AddModule{Kind: show.AudioIn})
+	p, in := named(t, a, "Pulse").ID, named(t, a, "Audio in").ID
+	if named(t, a, "Pulse").Every != 1 {
+		t.Errorf("a new Pulse flashes every %v beats", named(t, a, "Pulse").Every)
+	}
+	a.Handle(0, SetEvery{Module: p, Every: 0.5})
+	a.Handle(0, SetEvery{Module: p, Every: -1})
+	a.Handle(0, SetInput{Module: in, Input: "mic"})
+	if named(t, a, "Pulse").Every != 0.5 || named(t, a, "Audio in").Input != "mic" {
+		t.Errorf("the Pulse flashes every %v, the Audio in hears %q", named(t, a, "Pulse").Every, named(t, a, "Audio in").Input)
 	}
 }

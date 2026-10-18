@@ -18,12 +18,18 @@ Dome on an eight by five metre stage, a fader for each of its colours,
 a mixer, a DMX out and the stage view, all wired up:
 
 - **Routes** shows the modules and their wires. Drag from a port to
-  join it to another of the same kind; the buttons over it add
-  modules.
+  join it to another of the same kind; Add module adds one.
 - **Stage** shows the room from above, each light glowing as it plays.
   Drag a light to hang it elsewhere.
 - **Faders** is a fader for each fader module, and the grand master.
 - **Rig** is the lights, their types and their addresses.
+
+Lights can follow the music. **Audio in** listens to a sound card
+input. **Beat** finds the beat in it, and keeps counting through a
+break. **Tempo** follows that beat, or plays a tempo you tap or type.
+**Pulse** flashes on every beat, or every few, and fades. **Level** is
+how loud the sound is. A Pulse or a Level wires into anything a fader
+can.
 
 Tabs drag into any arrangement, and out into windows of their own.
 Ctrl+S saves the show, Ctrl+O opens one. See

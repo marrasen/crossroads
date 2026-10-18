@@ -17,6 +17,8 @@ var (
 	dmxInk   = theme.Color("crossroads.signal.dmx", color.NRGBA{R: 0x4f, G: 0xd6, B: 0xc0, A: 0xff})
 	mixerInk = theme.Color("crossroads.kind.mixer", color.NRGBA{R: 0xff, G: 0xc8, B: 0x4a, A: 0xff})
 	stageInk = theme.Color("crossroads.kind.stage", color.NRGBA{R: 0xff, G: 0x8a, B: 0x5e, A: 0xff})
+	audioInk = theme.Color("crossroads.signal.audio", color.NRGBA{R: 0x7c, G: 0xd9, B: 0x5a, A: 0xff})
+	clockInk = theme.Color("crossroads.signal.clock", color.NRGBA{R: 0xff, G: 0x6a, B: 0xb0, A: 0xff})
 )
 
 // signalInk is signal s's colour.
@@ -26,6 +28,10 @@ func signalInk(th *theme.Live, s engine.Signal) color.NRGBA {
 		return valueInk.Get(th)
 	case engine.Light:
 		return lightInk.Get(th)
+	case engine.Audio:
+		return audioInk.Get(th)
+	case engine.Clock:
+		return clockInk.Get(th)
 	case engine.DMX:
 	}
 	return dmxInk.Get(th)
@@ -34,8 +40,12 @@ func signalInk(th *theme.Live, s engine.Signal) color.NRGBA {
 // kindInk is the colour of a module of kind k.
 func kindInk(th *theme.Live, k show.Kind) color.NRGBA {
 	switch k {
-	case show.Fader:
+	case show.Fader, show.Level, show.Pulse:
 		return valueInk.Get(th)
+	case show.AudioIn:
+		return audioInk.Get(th)
+	case show.Beat, show.Tempo:
+		return clockInk.Get(th)
 	case show.Lights:
 		return lightInk.Get(th)
 	case show.Mixer:
