@@ -149,7 +149,7 @@ func (f *frame) show(s app.State, u *gunim.UI) {
 	f.st = s
 	f.d.SetLayout(s.Show.Layout, u)
 	for _, t := range f.tabs {
-		t.show(&f.st, u)
+		t.show(&f.st, shownIn(t, u))
 	}
 	if s.Imported != "" && f.win == 0 && f.told == nil && u != nil {
 		f.tell(s, u)
@@ -168,8 +168,24 @@ func (f *frame) show(s app.State, u *gunim.UI) {
 func (f *frame) live(l engine.Live, u *gunim.UI) {
 	f.last = l
 	for _, t := range f.tabs {
-		t.live(l, u)
+		t.live(l, shownIn(t, u))
 	}
+}
+
+// shownIn is u for a tab in its tree, and nil for one behind another
+// tab of its group: the dock keeps such a tab, and puts it back as it
+// comes in front, but it is out of the tree meanwhile, where nothing
+// can be inserted under it. It follows the show as a tab not yet
+// mounted does, and the tree is made of what it holds as it returns.
+func shownIn(t tab, u *gunim.UI) *gunim.UI {
+	if u == nil {
+		return nil
+	}
+	// Convert reports false for a node out of the tree.
+	if _, ok := u.Convert(geom.Point{}, t, t); !ok {
+		return nil
+	}
+	return u
 }
 
 // Children implements [gunim.Composite].
