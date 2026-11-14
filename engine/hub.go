@@ -74,6 +74,13 @@ func (p *port) aliveLocked() bool {
 	return p.output != nil && p.output.Err() == nil
 }
 
+// alive reports whether the port is open and its device there.
+func (p *port) alive() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.aliveLocked()
+}
+
 // hear keeps a message that came in, for the next tick.
 func (p *port) hear(e midi.Event) {
 	p.mu.Lock()
@@ -143,13 +150,15 @@ type hub struct {
 	heard     map[string][]midi.Event
 	sendTo    map[string]MIDIOut
 	fresh     map[string]bool
-	// freshIn says each input opened since the last tick.
+	// freshIn says each input opened since the last tick, and liveIn
+	// that it is open and its device there.
 	freshIn map[string]bool
+	liveIn  map[string]bool
 }
 
 func newHub() hub {
 	return hub{ins: map[string]*port{}, outs: map[string]*port{}, heard: map[string][]midi.Event{},
-		sendTo: map[string]MIDIOut{}, fresh: map[string]bool{}, freshIn: map[string]bool{}}
+		sendTo: map[string]MIDIOut{}, fresh: map[string]bool{}, freshIn: map[string]bool{}, liveIn: map[string]bool{}}
 }
 
 // devices are the MIDI devices s's modules listen to and send to.
@@ -212,9 +221,11 @@ func (h *hub) want(s *show.Show) {
 func (h *hub) tick(ports MIDIPorts, now time.Time, changed func()) {
 	clear(h.fresh)
 	clear(h.freshIn)
+	clear(h.liveIn)
 	for d, p := range h.ins {
 		p.open(ports, now, changed)
 		h.heard[d], h.freshIn[d], _ = p.take(h.heard[d][:0])
+		h.liveIn[d] = p.alive()
 	}
 	for d, p := range h.outs {
 		p.open(ports, now, changed)

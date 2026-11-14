@@ -288,6 +288,9 @@ type Module struct {
 	Chases     []Chase `json:"chases,omitempty"`
 	Speed      float64 `json:"speed,omitempty"`
 	FollowBeat bool    `json:"followBeat,omitempty"`
+	// PlayedFrom is the Controller module a Board is played from, by its
+	// ID, "" for none.
+	PlayedFrom string `json:"playedFrom,omitempty"`
 }
 
 // Pads is how many pads a Board has for scenes, and MaxSceneFade the
@@ -593,10 +596,16 @@ func (s *Show) Clone() Show {
 	return c
 }
 
-// RemoveModule takes module id out, with the wires to and from it.
+// RemoveModule takes module id out, with the wires to and from it; a
+// Board played from it is played from none.
 func (s *Show) RemoveModule(id string) {
 	s.Modules = slices.DeleteFunc(s.Modules, func(m Module) bool { return m.ID == id })
 	s.Wires = slices.DeleteFunc(s.Wires, func(w Wire) bool { return w.From.Module == id || w.To.Module == id })
+	for i := range s.Modules {
+		if s.Modules[i].PlayedFrom == id {
+			s.Modules[i].PlayedFrom = ""
+		}
+	}
 }
 
 // RemoveLight takes light id out of the rig, off the stage, out of
@@ -689,7 +698,8 @@ func (s *Show) Save(path string) error {
 // Mend makes s whole, as one read from a file another build wrote: the
 // stage has a size, wires join modules that are there, scenes hold
 // lights that are there, each on a pad of its own, chases step on the
-// pads there are, each with an ID of its own, and every tab is in the
+// pads there are, each with an ID of its own, a Board is played from a
+// Controller that is there or from none, and every tab is in the
 // layout.
 func (s *Show) Mend() {
 	if s.Stage.Width <= 0 || s.Stage.Depth <= 0 {
@@ -709,6 +719,11 @@ func (s *Show) Mend() {
 		}
 		if m := &s.Modules[i]; len(m.Chases) > 0 {
 			m.mendChases()
+		}
+		if m := &s.Modules[i]; m.PlayedFrom != "" {
+			if c := s.Module(m.PlayedFrom); c == nil || c.Kind != Controller {
+				m.PlayedFrom = ""
+			}
 		}
 	}
 	s.keepSceneLights()

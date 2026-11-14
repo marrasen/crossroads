@@ -239,7 +239,9 @@ const (
 var overridePorts = []Port{{Blackout, "Blackout", Value}, {FlashAll, "Flash white", Value}, {HoldStill, "Hold", Value}}
 
 // Override holds Mixer module's override which on, or lets it go, as
-// the Live tab's buttons do; a value wired into it holds it too.
+// the Live tab's buttons do; a value wired into it holds it too, and,
+// for Flash, a controller that plays a Board wired into it, while its
+// Flash is held.
 func (e *Engine) Override(module, which string, on bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -253,7 +255,7 @@ func (e *Engine) Override(module, which string, on bool) {
 
 // overridden reports whether Mixer m's override which is on.
 func (e *Engine) overridden(m, which string) bool {
-	if e.held[portKey{m, which}] {
+	if e.held[portKey{m, which}] || which == FlashAll && len(e.remotes) > 0 && e.flashHeld(m) {
 		return true
 	}
 	v, _ := e.input(m, which).(float64)

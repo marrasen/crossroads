@@ -53,6 +53,11 @@ type BoardState struct {
 	// to follow: the show's, or one tapped that the show does not hold
 	// yet.
 	Speed float64
+	// Remote is the Controller module that plays it, by ID, "" for none,
+	// and Page the page that controller is on, from 0: its knobs set
+	// channel faders, and its top row presses pads, Page times eight on.
+	Remote string
+	Page   int
 }
 
 // A Recorded is a scene a Board recorded, for the show to keep on
@@ -168,6 +173,9 @@ type board struct {
 	speed     float64
 	queued    bool
 	showSpeed float64
+	// took counts the steps the chase took, for a controller's Tap light
+	// to flash on.
+	took int
 }
 
 // A chaseLook is what a chase plays: for each slot, from 0, a value
@@ -205,6 +213,11 @@ type kept struct {
 func (e *Engine) Pick(module string, lights []string, toggle bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.pickLights(module, lights, toggle)
+}
+
+// pickLights is [Engine.Pick], with the engine held.
+func (e *Engine) pickLights(module string, lights []string, toggle bool) {
 	b := e.boards[module]
 	if b == nil {
 		return
@@ -235,6 +248,11 @@ func (e *Engine) Pick(module string, lights []string, toggle bool) {
 func (e *Engine) Hold(module string, chans []Channel, v byte) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.holdAt(module, chans, v)
+}
+
+// holdAt is [Engine.Hold], with the engine held.
+func (e *Engine) holdAt(module string, chans []Channel, v byte) {
 	b := e.boards[module]
 	if b == nil {
 		return
@@ -255,9 +273,28 @@ func (e *Engine) Hold(module string, chans []Channel, v byte) {
 func (e *Engine) ClearBoard(module string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.letGoAll(module)
+}
+
+// letGoAll is [Engine.ClearBoard], with the engine held.
+func (e *Engine) letGoAll(module string) {
 	if b := e.boards[module]; b != nil {
 		b.held = nil
 	}
+}
+
+// letGo lets go of chans on Board module, the other channels its faders
+// hold held on.
+func (e *Engine) letGo(module string, chans []Channel) {
+	b := e.boards[module]
+	if b == nil || !slices.ContainsFunc(chans, func(c Channel) bool { _, ok := b.held[c]; return ok }) {
+		return
+	}
+	held := maps.Clone(b.held)
+	for _, c := range chans {
+		delete(held, c)
+	}
+	b.held = held
 }
 
 // PressRecord has Board module wait for a pad to record onto, or, where
@@ -266,6 +303,11 @@ func (e *Engine) ClearBoard(module string) {
 func (e *Engine) PressRecord(module string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.recordDown(module)
+}
+
+// recordDown is [Engine.PressRecord], with the engine held.
+func (e *Engine) recordDown(module string) {
 	if b := e.boards[module]; b != nil && !b.making {
 		b.record = !b.record
 	}
@@ -614,6 +656,9 @@ func (e *Engine) playBoard(m *show.Module, cat fixtures.Catalog, dt float64, liv
 		}
 	}
 	slices.Sort(st.On)
+	if rm := e.remotes[m.PlayedFrom]; rm != nil && rm.board == m.ID {
+		st.Remote, st.Page = m.PlayedFrom, rm.page
+	}
 	live.Boards[m.ID] = st
 }
 
@@ -635,14 +680,14 @@ func (e *Engine) boardsInto(mixer string, f func(id string, b *board)) {
 
 // boardsOver puts what the Boards wired into Mixer module mixer play
 // over u, the universe it merged from its other inputs: a Board has
-// the channels it sets, whatever else is wired into the mixer, under
-// the grand master. Of what a Board plays on a channel the grand master
+// the channels it sets, whatever else is wired into the mixer; the
+// grand master comes after. Of what a Board plays on a channel the master
 // dims, each at its level, the most shows, and what plays under shows
 // through by as much as the Board's fullest level there leaves: so a
 // scene fading crosses to another of the Board's that holds the channel,
 // or to what the mixer merged where none does. A fader held has its
 // channel over all of that.
-func (e *Engine) boardsOver(mixer string, master float64, u *dmx.Universe) {
+func (e *Engine) boardsOver(mixer string, u *dmx.Universe) {
 	e.boardsInto(mixer, func(_ string, b *board) {
 		var cover, top [dmx.Channels]float32
 		for _, p := range b.plays {
@@ -657,19 +702,11 @@ func (e *Engine) boardsOver(mixer string, master float64, u *dmx.Universe) {
 			if c <= 0 {
 				continue
 			}
-			v := float64(top[i])
-			if e.dims[i] && master < 1 {
-				v *= master
-			}
-			u[i] = dmx.Clamp8f(float64(u[i])*(1-float64(c)) + v)
+			u[i] = dmx.Clamp8f(float64(u[i])*(1-float64(c)) + float64(top[i]))
 		}
 		for i, v := range &b.over {
-			if v == 0 {
-				continue
-			}
-			u[i] = byte(v - 1)
-			if e.dims[i] && master < 1 {
-				u[i] = dmx.Clamp8f(float64(u[i]) * master)
+			if v != 0 {
+				u[i] = byte(v - 1)
 			}
 		}
 	})
@@ -678,15 +715,20 @@ func (e *Engine) boardsOver(mixer string, master float64, u *dmx.Universe) {
 // Forget lets go of what a show does not keep, as another show takes
 // its place: what each Board has picked and holds, its scenes on and
 // those recorded, and whether Record waits; the chase being made, those
-// made, the one that runs and the last run, and the taps; and the
-// overrides held.
+// made, the one that runs and the last run, and the taps; the overrides
+// held; the page each controller that plays a Board is on, and the
+// grand masters they set that the show does not hold.
 func (e *Engine) Forget() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	clear(e.boards)
+	clear(e.raw)
 	clear(e.held)
 	e.recorded = nil
 	e.made = nil
+	clear(e.remotes)
+	clear(e.masters)
+	e.mastered = nil
 }
 
 // boardsPlay puts in each Board's state what the Mixer it is wired into

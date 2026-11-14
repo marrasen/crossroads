@@ -36,7 +36,12 @@ a board, a mixer, a DMX out and the stage view, all wired up:
   the sound card wires one in. A right click renames a chase, takes out
   its last step, or deletes it. The grand master, Blackout
   and Flash are there, and the DMX box it all goes out on: its serial
-  port, or its address and universe.
+  port, or its address and universe. Played from an X-Touch Mini, its
+  knobs set eight channel faders and its top row presses eight pads,
+  Layer A and B turning to the next eight; the bottom row picks the
+  light before and after, and is Record, Clear, the last chase, Tap,
+  Flash and Blackout; its fader is the grand master. Add an X-Touch
+  Mini adds one on its port. The tab marks what the controller holds.
 - **Faders** is a fader for each fader module, and the grand master.
 - **Rig** is the lights, their types and their addresses.
 - **Player** is the playlist and the transport.
@@ -69,7 +74,9 @@ A **Controller** module is a MIDI controller. A Behringer X-Touch Mini
 is built in, in its Mackie Control (MC) mode: crossroads switches it
 to MC mode as it connects, and its rings and button lights follow what
 crossroads plays. If it stays in Standard mode, the **Controllers**
-tab says so: hold MC while plugging it in. Any other controller learns
+tab says so: hold MC while plugging it in. An X-Touch Mini can play
+the Board, which then lights all its rings and buttons; its knobs and
+buttons still fire whatever they are wired to. Any other controller learns
 its controls: press Learn a control on the **Controllers** tab, then
 move one. A fader takes over its value only once it passes it. **Map** scales a value, **Every** fires every so
 many beats, **Toggle** turns on and off, and **MIDI out** sends notes

@@ -1,11 +1,13 @@
 package ui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/marrasen/crossroads/app"
+	"github.com/marrasen/crossroads/controller"
 	"github.com/marrasen/crossroads/engine"
 	"github.com/marrasen/crossroads/pattern"
 	"github.com/marrasen/crossroads/routing"
@@ -1092,5 +1094,102 @@ func TestTheBoardTabMakesAndRunsAChase(t *testing.T) {
 	}
 	if got := press(chase, input.ButtonPrimary); len(got) != 0 || b.menu.Focusable() {
 		t.Errorf("a press with the menu open asks %v, and the menu is open %v", got, b.menu.Focusable())
+	}
+}
+
+// TestTheBoardTabIsPlayedFromAController: with no controller in the
+// show, the tab offers Add an X-Touch Mini, which asks for one; with
+// one that plays the board, the picker offers None and it, picked,
+// the button is gone, and the eight faders and pads of the page it is
+// on are marked, the next eight on page 2; None picked asks to play
+// the board from none; and its Controllers card says it plays the
+// Board, or, with no port, that it wants one.
+func TestTheBoardTabIsPlayedFromAController(t *testing.T) {
+	s := show.Start()
+	board := ""
+	for _, m := range s.Modules {
+		if m.Kind == show.Board {
+			board = m.ID
+		}
+	}
+	w := testWindow(t, geom.Sz(1280, 800))
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: s}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	e := engine.New(nil)
+	defer e.Close()
+	e.Set(s)
+	tick := func() {
+		if err := c.Patch(app.LiveTopic, e.Tick()); err != nil {
+			t.Fatal(err)
+		}
+		for range 3 {
+			w.Frame(time.Second / 60)
+		}
+	}
+	tick()
+	tab, ok := frameOf(t, w).tabs[show.TabBoard].(*boardTab)
+	if !ok {
+		t.Fatal("no Board tab in front")
+	}
+	b := tab.page
+	if len(b.remotes) != 1 || b.from.Selected() != 0 || b.hasTouch {
+		t.Fatalf("with no controller, the picker offers %v, picked %d", b.remotes, b.from.Selected())
+	}
+	ui := frameUI(t, w)
+	r, ok := ui.Bounds(b.addTouch)
+	if !ok {
+		t.Fatal("Add an X-Touch Mini is not drawn")
+	}
+	w.Input(input.PointerMove{Pos: r.Center()})
+	w.Input(input.PointerDown{Pos: r.Center(), Button: input.ButtonPrimary, Clicks: 1})
+	w.Input(input.PointerUp{Pos: r.Center(), Button: input.ButtonPrimary})
+	w.Frame(time.Second / 60)
+	var got []gunim.Intent
+	for len(c.Intents()) > 0 {
+		got = append(got, (<-c.Intents()).Intent)
+	}
+	if len(got) != 1 || got[0] != (app.AddXTouchMini{Module: board}) {
+		t.Fatalf("Add an X-Touch Mini asks %v", got)
+	}
+	ctl := s.NewID("m")
+	s.Modules = append(s.Modules, show.Module{ID: ctl, Kind: show.Controller, Name: "X-Touch Mini", Layout: controller.XTouchMiniID})
+	s.Module(board).PlayedFrom = ctl
+	s.Layout.Show(show.TabMIDI)
+	if err := c.Publish(app.ShowTopic, app.State{Show: s}); err != nil {
+		t.Fatal(err)
+	}
+	e.Set(s)
+	e.Pick(board, []string{s.Rig.Lights[0].ID}, false)
+	tick()
+	if len(b.remotes) != 2 || b.remotes[1] != ctl || b.from.Selected() != 1 || slices.Contains(b.kids, gunim.Node(b.addTouch)) {
+		t.Fatalf("played from the X-Touch Mini, the picker offers %v, picked %d", b.remotes, b.from.Selected())
+	}
+	st := b.played.Boards[board]
+	if st.Remote != ctl || len(b.faders) != 9 {
+		t.Fatalf("the board shows %+v, with %d faders", st, len(b.faders))
+	}
+	for i := range show.Pads {
+		if b.held(&st, i) != (i < 8) {
+			t.Errorf("on page 1, fader or pad %d marked %v", i+1, b.held(&st, i))
+		}
+	}
+	st.Page = 1
+	if b.held(&st, 7) || !b.held(&st, 8) || !b.held(&st, 15) {
+		t.Error("on page 2, the marks are not on 9 to 16")
+	}
+	if in := b.from.OnChange(0, nil); in != (app.PlayFrom{Module: board}) {
+		t.Errorf("None picked asks %v", in)
+	}
+	if says := controllerSays(&s, s.Module(ctl), engine.Desk{Says: "No device"}); says != "Plays the Board · No MIDI port: plug it in, then pick its port" {
+		t.Errorf("the controller's card says %q", says)
+	}
+	s.Module(ctl).Device = "X-TOUCH MINI"
+	s.Module(board).PlayedFrom = ""
+	if says := controllerSays(&s, s.Module(ctl), engine.Desk{Says: "X-TOUCH MINI"}); says != "X-TOUCH MINI" {
+		t.Errorf("playing no board, the controller's card says %q", says)
 	}
 }

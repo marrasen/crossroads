@@ -27,6 +27,7 @@ import (
 	"github.com/marrasen/gunim-dmx/enttec"
 	"github.com/marrasen/gunim-dmx/fixtures"
 	"github.com/marrasen/gunim-dmx/sacn"
+	"github.com/marrasen/gunim/audio/midi"
 	"github.com/marrasen/gunim/driver"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/widget/dock"
@@ -202,6 +203,16 @@ type (
 		Module string
 		On     bool
 	}
+	// PlayFrom has Board Module played from Controller module
+	// Controller, or, with "", from none. A controller plays one Board
+	// at a time: one played from it before is played from none.
+	PlayFrom struct{ Module, Controller string }
+	// AddXTouchMini adds a Controller with the X-Touch Mini's layout, on
+	// the first MIDI port whose name starts with "X-TOUCH MINI", or on
+	// none where there is no such port, and has Board Module played from
+	// it; where the show has a Controller with that layout already, it
+	// does nothing.
+	AddXTouchMini struct{ Module string }
 	// ListenForBeat has Board Module follow the beat the sound card
 	// hears: an Audio in and a Beat, wired into its clock, where nothing
 	// is wired there yet.
@@ -383,6 +394,8 @@ type App struct {
 	// finding says it is listing them now.
 	Serial  func() ([]enttec.PortInfo, error)
 	finding bool
+	// MIDIIns lists the MIDI inputs; [midi.Inputs] where it is nil.
+	MIDIIns func() ([]string, error)
 }
 
 // scanLanes is how many songs are scanned at once.
@@ -758,6 +771,14 @@ func (a *App) Handle(win int, in gunim.Intent) {
 			return
 		}
 		m.FollowBeat = in.On
+	case PlayFrom:
+		if !playFrom(&s, in.Module, in.Controller) {
+			return
+		}
+	case AddXTouchMini:
+		if !a.addXTouchMini(&s, in.Module) {
+			return
+		}
 	case ListenForBeat:
 		if !listenForBeat(&s, in.Module) {
 			return
@@ -1035,11 +1056,75 @@ func (a *App) learntFrom(got []engine.Learnt) {
 	a.setShow(s)
 }
 
-// recorded keeps the scenes the Boards recorded in the show, and the
-// chases they made and the speeds tapped.
+// recorded keeps the scenes the Boards recorded in the show, the
+// chases they made and the speeds tapped, and the grand masters the
+// controllers that play them moved.
 func (a *App) recorded() {
 	a.recordedFrom(a.eng.Recorded())
 	a.madeFrom(a.eng.Made())
+	a.masteredFrom(a.eng.Masters())
+}
+
+// masteredFrom sets each grand master got on its Mixer.
+func (a *App) masteredFrom(got []engine.Master) {
+	if len(got) == 0 {
+		return
+	}
+	s := a.st.Show.Clone()
+	changed := false
+	for _, g := range got {
+		if m := s.Module(g.Module); m != nil && m.Kind == show.Mixer && m.Value != g.Value {
+			m.Value = g.Value
+			changed = true
+		}
+	}
+	if changed {
+		a.setShow(s)
+	}
+}
+
+// playFrom has Board module board of s played from Controller module
+// ctl, or, with "", from none, and any other Board played from ctl from
+// none. It reports false, and does nothing, where that changes nothing,
+// or ctl cannot play a Board.
+func playFrom(s *show.Show, board, ctl string) bool {
+	m := boardOf(s, board)
+	if m == nil || m.PlayedFrom == ctl || ctl != "" && !controller.PlaysBoard(s.Module(ctl)) {
+		return false
+	}
+	for i := range s.Modules {
+		if o := &s.Modules[i]; ctl != "" && o.PlayedFrom == ctl {
+			o.PlayedFrom = ""
+		}
+	}
+	boardOf(s, board).PlayedFrom = ctl
+	return true
+}
+
+// addXTouchMini adds to s a Controller with the X-Touch Mini's layout,
+// on the first MIDI input whose name starts with "X-TOUCH MINI", or on
+// none, and has Board module board play from it. It reports false, and
+// does nothing, where s has no such Board, or has a Controller with
+// that layout already.
+func (a *App) addXTouchMini(s *show.Show, board string) bool {
+	m := boardOf(s, board)
+	if m == nil || slices.ContainsFunc(s.Modules, func(c show.Module) bool {
+		return c.Kind == show.Controller && c.Layout == controller.XTouchMiniID
+	}) {
+		return false
+	}
+	list := a.MIDIIns
+	if list == nil {
+		list = midi.Inputs
+	}
+	names, err := list()
+	if err != nil {
+		log.Printf("crossroads: listing the MIDI ports: %v", err)
+	}
+	c := show.Module{ID: s.NewID("m"), Kind: show.Controller, Name: "X-Touch Mini", At: m.At.Add(geom.Pt(-300, 120)),
+		Layout: controller.XTouchMiniID, Device: controller.XTouchMiniPort(names)}
+	s.Modules = append(s.Modules, c)
+	return playFrom(s, board, c.ID)
 }
 
 // madeFrom adds each chase got to its Board, and sets each speed got as
@@ -1123,6 +1208,12 @@ func (a *App) setShow(s show.Show) {
 	a.st.Show, a.st.Unsaved = s, true
 	a.eng.Set(s)
 	for id, v := range a.moving {
+		if a.eng.Mastering(id) {
+			// A controller's fader took the grand master since it was
+			// held here: the hold is over.
+			delete(a.moving, id)
+			continue
+		}
 		// A fader held plays on where it is held.
 		a.eng.SetValue(id, v)
 	}
@@ -1223,13 +1314,28 @@ func (a *App) chooseSongs(win int) {
 }
 
 // prune takes out the wires of s into or out of ports that are gone,
-// as a Lights module's input for a colour none of its lights has now.
+// as a Lights module's input for a colour none of its lights has now;
+// and a Board played from a Controller that cannot play one, as one
+// whose layout lacks the controls, or from one an earlier Board is
+// played from, is played from none.
 func prune(s *show.Show) {
 	s.Wires = slices.DeleteFunc(s.Wires, func(w show.Wire) bool {
 		_, from := engine.PortOf(s, w.From, true)
 		_, to := engine.PortOf(s, w.To, false)
 		return !from || !to
 	})
+	taken := map[string]bool{}
+	for i := range s.Modules {
+		m := &s.Modules[i]
+		if m.PlayedFrom == "" {
+			continue
+		}
+		if m.Kind != show.Board || taken[m.PlayedFrom] || !controller.PlaysBoard(s.Module(m.PlayedFrom)) {
+			m.PlayedFrom = ""
+			continue
+		}
+		taken[m.PlayedFrom] = true
+	}
 }
 
 // replace opens show s, from path: the windows close and open again as

@@ -252,6 +252,9 @@ type Engine struct {
 	order  []string
 	layers map[string]*mix.Layer
 	mixers map[string]*mix.Mixer
+	// raw is what each Mixer played last, before its grand master and
+	// its overrides.
+	raw map[string]dmx.Universe
 	// heard are the layers each mixer merged last tick.
 	heard   map[string][]*mix.Layer
 	dims    [dmx.Channels]bool
@@ -339,6 +342,14 @@ type Engine struct {
 	boards   map[string]*board
 	recorded []Recorded
 	made     []Made
+	// remotes are the Controllers that play a Board, by module; masters
+	// the grand masters they set that the show does not hold yet, and
+	// shown each Mixer's own as the show last set has it, by module; and
+	// mastered those grand masters, for the application to keep.
+	remotes  map[string]*remote
+	masters  map[string]*master
+	shown    map[string]float64
+	mastered []Master
 	// audition is the pattern the editor plays while its test button
 	// is held, audLayer its light, and audBeats the beat it counts
 	// where the show has no Tempo.
@@ -375,14 +386,15 @@ type portKey struct {
 // New returns an engine of no modules. changed, where set, runs from
 // any goroutine as a DMX box connects, fails or goes.
 func New(changed func()) *Engine {
-	return &Engine{layers: map[string]*mix.Layer{}, mixers: map[string]*mix.Mixer{}, heard: map[string][]*mix.Layer{}, outs: map[string]*out{},
+	return &Engine{layers: map[string]*mix.Layer{}, mixers: map[string]*mix.Mixer{}, raw: map[string]dmx.Universe{}, heard: map[string][]*mix.Layer{}, outs: map[string]*out{},
 		values: map[portKey]any{}, changed: changed, ears: map[string]*ear{}, follow: map[string]*follower{},
 		tempos: map[string]*ownTempo{}, levels: map[string]float64{}, pressed: map[string]bool{}, bar: math.MinInt64,
 		desks: map[string]*desk{}, senders: map[string]*sender{}, everys: map[string]int64{}, toggles: map[string]bool{},
 		steppers: map[string]*stepper{}, held: map[portKey]bool{}, frozen: map[string]dmx.Universe{}, layerOf: map[*mix.Layer]string{},
 		clockIns: map[string]*clockIn{}, clockOuts: map[string]*clockOut{}, sync: syncs{deck: -1},
 		timers: map[string]*timer{}, patterns: map[string]pattern.Pattern{}, hub: newHub(), routers: map[string]*router{},
-		effects: map[string]*fxRunner{}, programs: map[string]fx.Program{}, boards: map[string]*board{}, audLayer: mix.NewLayer()}
+		effects: map[string]*fxRunner{}, programs: map[string]fx.Program{}, boards: map[string]*board{}, audLayer: mix.NewLayer(),
+		remotes: map[string]*remote{}, masters: map[string]*master{}, shown: map[string]float64{}}
 }
 
 // Set runs show s from now on: its modules in its wires' order, with a
@@ -391,6 +403,7 @@ func (e *Engine) Set(s show.Show) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.s = s.Clone()
+	e.keepMasters()
 	e.order = order(&e.s)
 	cat := e.s.Catalog()
 	e.dims = [dmx.Channels]bool{}
@@ -460,18 +473,26 @@ func (e *Engine) Set(s show.Show) {
 			e.ears[m.ID] = a
 		case show.Controller:
 			d := e.desks[m.ID]
+			if d != nil && d.layout != m.Layout {
+				// Another layout: a button held under the one before is
+				// held no more, as its letting go may never be heard.
+				d.layout = m.Layout
+				clear(d.held)
+			}
 			if d != nil && d.device == m.Device {
 				continue
 			}
 			if d == nil {
 				d = &desk{values: map[string]float64{}, pos: map[string]float64{}, caught: map[string]bool{}, held: map[string]bool{},
-					fired: map[string]bool{}, sent: map[string]int{}}
+					fired: map[string]bool{}, sent: map[string]int{}, layout: m.Layout}
 				e.desks[m.ID] = d
 			}
-			// Another device: its lights and its sliders start afresh.
+			// Another device: its lights, its sliders and its buttons start
+			// afresh.
 			d.device, d.standard, d.switched = m.Device, false, false
 			clear(d.sent)
 			clear(d.caught)
+			clear(d.held)
 		case show.MIDIOut:
 			if sd := e.senders[m.ID]; sd != nil && sd.device == m.Device {
 				continue
@@ -538,6 +559,7 @@ func (e *Engine) Set(s show.Show) {
 		if !keep[id] {
 			delete(e.mixers, id)
 			delete(e.heard, id)
+			delete(e.raw, id)
 		}
 	}
 	for id, o := range e.outs {
@@ -581,6 +603,7 @@ func (e *Engine) Set(s show.Show) {
 		}
 	}
 	e.keepBoards(cat)
+	e.keepRemotes()
 	e.hub.want(&e.s)
 	for id, co := range e.clockOuts {
 		if m := e.s.Module(id); m == nil || m.Kind != show.ClockOut {
@@ -682,7 +705,8 @@ func (e *Engine) open(o show.Output) *out {
 	return ob
 }
 
-// order is the modules of s, each after every module that feeds it.
+// order is the modules of s, each after every module that feeds it,
+// and a Board after the controller it is played from.
 func order(s *show.Show) []string {
 	var out []string
 	done := map[string]bool{}
@@ -697,6 +721,11 @@ func order(s *show.Show) []string {
 			if w.To.Module == id && !back(s, w.To) {
 				visit(w.From.Module)
 			}
+		}
+		if m := s.Module(id); m != nil && m.Kind == show.Board && m.PlayedFrom != "" {
+			// After the controller it is played from, so what that heard
+			// plays in the same tick.
+			visit(m.PlayedFrom)
 		}
 		busy[id] = false
 		done[id] = true
@@ -742,7 +771,18 @@ func (e *Engine) SetValue(module string, v float64) {
 	defer e.mu.Unlock()
 	if m := e.s.Module(module); m != nil {
 		m.Value = min(max(v, 0), 1)
+		// Set by hand, a grand master is no more as a controller's fader
+		// set it: this has the last word.
+		delete(e.masters, module)
 	}
+}
+
+// Mastering reports whether a controller's fader set Mixer module's
+// grand master to a value the show does not hold yet.
+func (e *Engine) Mastering(module string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.masters[module] != nil
 }
 
 // input is what the wire into port of module carries, nil for none.
@@ -812,9 +852,20 @@ func (e *Engine) Tick() Live {
 				mx.Add(e.audLayer)
 				e.heard[id] = append(e.heard[id], e.audLayer)
 			}
-			mx.SetMaster(m.Value)
+			// Merged whole, the Boards' light over it, and then the grand
+			// master: what plays before it is kept, for a knob to turn a
+			// fader on from.
+			mx.SetMaster(1)
 			merged := mx.Merge(&e.dims)
-			e.boardsOver(id, m.Value, &merged)
+			e.boardsOver(id, &merged)
+			e.raw[id] = merged
+			if m.Value < 1 {
+				for i, dim := range &e.dims {
+					if dim {
+						merged[i] = dmx.Clamp8f(float64(merged[i]) * m.Value)
+					}
+				}
+			}
 			u, on := e.overrideAll(id, merged)
 			e.values[portKey{id, "out"}] = u
 			live.Values[id] = m.Value
@@ -884,6 +935,8 @@ func (e *Engine) Tick() Live {
 			}
 		}
 	}
+	e.lightRemotes(now)
+	e.settleMasters(now)
 	e.boardsPlay(&live)
 	live.Playing = Playing{Song: e.song, Pos: e.state.Pos, Len: e.state.Len, Playing: e.state.Playing, Err: e.deckErr}
 	live.Log = slices.Clone(e.log)
