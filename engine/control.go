@@ -58,6 +58,8 @@ func (systemMIDI) OpenOut(name string) (MIDIOut, error) {
 // control.
 type desk struct {
 	device string
+	// layout is the layout it had as the show was last set.
+	layout string
 	values map[string]float64
 	// pos is where each slider not caught up stood last.
 	pos    map[string]float64

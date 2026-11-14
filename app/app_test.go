@@ -980,3 +980,19 @@ func TestTheBoardPlayedFromAnXTouchMiniChangesTheShowOnlyAsItKeepsIt(t *testing.
 		t.Errorf("kept, the show changed again, or the master plays %v", live.Values[mixer])
 	}
 }
+
+// TestAMasterHeldOnScreenPlaysOnThroughAShowSet: with no value of a
+// controller's fader waiting in the engine, a show set, as for a master
+// kept, leaves the master where it is held on screen.
+func TestAMasterHeldOnScreenPlaysOnThroughAShowSet(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	mixer := named(t, a, "Mixer").ID
+	a.Handle(0, SetValue{Module: mixer, Value: 0.6})
+	a.masteredFrom([]engine.Master{{Module: mixer, Value: 0.25}})
+	if got := a.eng.Tick().Values[mixer]; got != 0.6 {
+		t.Errorf("held on screen at 0.6, the master plays %v", got)
+	}
+	if _, held := a.moving[mixer]; !held {
+		t.Error("the hold on screen is over, though no fader took the master")
+	}
+}

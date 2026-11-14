@@ -1208,6 +1208,12 @@ func (a *App) setShow(s show.Show) {
 	a.st.Show, a.st.Unsaved = s, true
 	a.eng.Set(s)
 	for id, v := range a.moving {
+		if a.eng.Mastering(id) {
+			// A controller's fader took the grand master since it was
+			// held here: the hold is over.
+			delete(a.moving, id)
+			continue
+		}
 		// A fader held plays on where it is held.
 		a.eng.SetValue(id, v)
 	}

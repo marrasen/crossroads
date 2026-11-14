@@ -623,3 +623,149 @@ func TestAControllerRemovedOrOfAnotherLayoutPlaysTheBoardNoMore(t *testing.T) {
 		t.Error("removed, the controller plays the board on, or flashes")
 	}
 }
+
+// TestAKnobTurnsItsFaderOnFromWhatPlaysBeforeTheMaster: under a grand
+// master at half, and under blackout, a knob turned a step holds its
+// channel a step from what played before either, not from what came
+// out of the mixer.
+func TestAKnobTurnsItsFaderOnFromWhatPlaysBeforeTheMaster(t *testing.T) {
+	r := newPlayRig(t)
+	r.s.Module(r.mixer).Value = 0.5
+	// The par's dimmer, its first channel.
+	r.s.Module(r.board).SetScene(show.Scene{Pad: 0, Name: "Par", Values: map[string]map[int]byte{r.par: {1: 200}}})
+	r.set()
+	r.e.PressPad(r.board, 0)
+	r.e.Pick(r.board, []string{r.par}, false)
+	if live := r.tick(); live.Stage[9] != 100 {
+		t.Fatalf("under a master at half, the par's dimmer plays %d", live.Stage[9])
+	}
+	r.d.play(midi.Control(0, 16, 1))
+	r.tick()
+	live := r.tick()
+	if got := live.Boards[r.board].Held[Channel{Light: r.par, Offset: 1}]; got != 203 {
+		t.Errorf("a step up from 200 holds %d", got)
+	}
+	if live.Stage[9] < 100 {
+		t.Errorf("a step up dimmed the light to %d", live.Stage[9])
+	}
+	r.e.ClearBoard(r.board)
+	r.e.Override(r.mixer, Blackout, true)
+	r.tick()
+	r.d.play(midi.Control(0, 16, 1))
+	r.tick()
+	if got := r.tick().Boards[r.board].Held[Channel{Light: r.par, Offset: 1}]; got != 203 {
+		t.Errorf("under blackout, a step up from 200 holds %d", got)
+	}
+}
+
+// TestTheMasterSetOnScreenHasTheLastWordOverTheFaders: the fader's
+// value, not yet kept by the show, goes as the master is set by hand,
+// even back to what the show holds; and a show set then leaves it.
+func TestTheMasterSetOnScreenHasTheLastWordOverTheFaders(t *testing.T) {
+	r := newPlayRig(t)
+	master := func() float64 { return r.tick().Values[r.mixer] }
+	r.d.play(fader(127))
+	r.d.play(fader(32))
+	if got := master(); got != 32.0/127 || !r.e.Mastering(r.mixer) {
+		t.Fatalf("the fader brought down, the master is %v, mastering %v", got, r.e.Mastering(r.mixer))
+	}
+	r.e.SetValue(r.mixer, 1)
+	if r.e.Mastering(r.mixer) {
+		t.Error("the master set by hand, the fader's value still waits")
+	}
+	r.set()
+	if got := master(); got != 1 {
+		t.Errorf("set by hand to what the show holds, and the show set, the master is %v", got)
+	}
+	for range 80 {
+		r.tick()
+	}
+	if got := r.e.Masters(); len(got) != 0 {
+		t.Errorf("the master set by hand, the engine hands over %+v", got)
+	}
+}
+
+// TestTheTapLightStillFlashesOnAFastChase: at 600 steps a minute, a
+// step is four ticks; the light is lit for part of each and dark for
+// the rest.
+func TestTheTapLightStillFlashesOnAFastChase(t *testing.T) {
+	r := newPlayRig(t)
+	m := r.s.Module(r.board)
+	m.Speed = show.MaxSpeed
+	m.SetScene(show.Scene{Pad: 0, Name: "A", Values: map[string]map[int]byte{r.dome: {2: 100}}})
+	m.SetScene(show.Scene{Pad: 1, Name: "B", Values: map[string]map[int]byte{r.dome: {2: 200}}})
+	m.Chases = []show.Chase{{ID: 1, Name: "Run", Steps: []int{0, 1}}}
+	r.set()
+	r.e.PressChase(r.board, 1)
+	for range 8 {
+		r.tick()
+	}
+	r.d.took()
+	on, off := 0, 0
+	for range 80 {
+		r.tick()
+		for _, msg := range r.d.took() {
+			switch {
+			case same(msg, midi.NoteOn(0, tapNote, 127)):
+				on++
+			case same(msg, midi.NoteOn(0, tapNote, 0)):
+				off++
+			}
+		}
+	}
+	// Two seconds, twenty steps.
+	if on < 18 || on > 21 || off < 18 || off > 21 {
+		t.Errorf("over twenty steps, the Tap light went on %d times and off %d", on, off)
+	}
+}
+
+// TestTheFaderPicksTheMasterUpAfreshOnceTheBoardIsWiredInAgain: the
+// board out of its mixer and back, the fader, moved meanwhile, does not
+// have the master until it passes it.
+func TestTheFaderPicksTheMasterUpAfreshOnceTheBoardIsWiredInAgain(t *testing.T) {
+	r := newPlayRig(t)
+	master := func() float64 { return r.tick().Values[r.mixer] }
+	r.d.play(fader(127))
+	if got := master(); got != 1 {
+		t.Fatalf("the fader at the top, the master is %v", got)
+	}
+	wires := slices.Clone(r.s.Wires)
+	r.s.Wires = slices.DeleteFunc(r.s.Wires, func(w show.Wire) bool { return w.From.Module == r.board })
+	r.set()
+	r.d.play(fader(25))
+	r.tick()
+	r.s.Wires = wires
+	r.set()
+	r.d.play(fader(26))
+	if got := master(); got != 1 {
+		t.Errorf("wired in again, the fader far from the master moved it to %v", got)
+	}
+}
+
+// TestFlashHeldThroughAChangeOfLayoutIsLetGo: its letting go not heard,
+// as the layout it was pressed under is left, Flash is held no more
+// once the layout is back.
+func TestFlashHeldThroughAChangeOfLayoutIsLetGo(t *testing.T) {
+	r := newPlayRig(t)
+	flash := func() bool {
+		r.tick()
+		return r.tick().Overrides[r.mixer][1]
+	}
+	r.d.play(midi.NoteOn(0, flashNote, 127))
+	if !flash() {
+		t.Fatal("Bottom 7 held, the mixer does not flash")
+	}
+	r.s.Module(r.ctl).Layout = ""
+	r.s.Module(r.board).PlayedFrom = ""
+	r.set()
+	r.d.play(midi.NoteOn(0, flashNote, 0))
+	if flash() {
+		t.Error("the layout left, the mixer flashes on")
+	}
+	r.s.Module(r.ctl).Layout = controller.XTouchMiniID
+	r.s.Module(r.board).PlayedFrom = r.ctl
+	r.set()
+	if flash() {
+		t.Error("the layout back, with no button held, the mixer flashes")
+	}
+}

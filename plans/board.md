@@ -1,6 +1,7 @@
 # Plan: crossroads as a stand-alone DMX board
 
-**Status:** a plan, decided on 2026-11-14. Nothing of it is built yet.
+**Status:** built, in pull requests #14 to #18, on 2026-11-14. Not yet
+tried with a real ENTTEC box or a real X-Touch Mini.
 
 crossroads should be usable in place of a hardware DMX board: plug in
 an ENTTEC box, open the **Board** tab, pick lights, push faders, store
@@ -192,10 +193,10 @@ controller's outputs still work in Routes.
 
 | Control | Does | Light |
 |---|---|---|
-| Knobs 1–8 | The first eight channel faders | Ring shows the value |
+| Knobs 1–8 | The page's eight channel faders. A step is 3 of 255, times the knob's speed, from where the fader stands before the grand master | Ring shows the value |
 | Knob pressed | Lets go of that fader | |
 | Top row | Scene pads 1–8 | Lit while on; all blink while Record waits |
-| Bottom 1, 2 | Pick the light before, the next light | |
+| Bottom 1, 2 | Pick the light before, the next light | Lit while held |
 | Bottom 3 | Record | Blinks while it waits for a pad |
 | Bottom 4 | Clear | Lit while any fader holds a value |
 | Bottom 5 | Start or stop the chase last run | Lit while it runs |

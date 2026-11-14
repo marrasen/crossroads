@@ -10,7 +10,6 @@ import (
 
 	"github.com/marrasen/crossroads/controller"
 	"github.com/marrasen/crossroads/show"
-	"github.com/marrasen/gunim-dmx/dmx"
 	"github.com/marrasen/gunim-dmx/fixtures"
 )
 
@@ -27,10 +26,15 @@ type remote struct {
 	pos           float64
 	moved, caught bool
 	set           float64
+	// mixer is the Mixer whose grand master the fader was last heard
+	// for, "" for none.
+	mixer string
 	// took is how many steps the Board's chase had taken as the Tap
-	// light last looked, and flash is when that light goes out.
-	took  int
-	flash time.Time
+	// light last looked, stepped when it took the last, and flash when
+	// that light goes out.
+	took    int
+	stepped time.Time
+	flash   time.Time
 }
 
 // An act is a control a remote heard: a knob turned ticks steps, the
@@ -217,14 +221,15 @@ func (e *Engine) pageFader(rm *remote, b *board, n int) (Fader, bool) {
 }
 
 // standsAt is where fader f of Board state b stands, 0 to 255: what it
-// holds, or, not held, what its first channel plays now out of Mixer
-// module mixer, as the Board tab shows it.
+// holds, or, not held, what its first channel played last in Mixer
+// module mixer, before the grand master and the overrides, so that a
+// knob turned a step leaves the light a step from where it was.
 func (e *Engine) standsAt(cat fixtures.Catalog, b *board, mixer string, f Fader) byte {
 	c := f.Channels[0]
 	if v, ok := b.held[c]; ok {
 		return v
 	}
-	u, played := e.values[portKey{mixer, "out"}].(dmx.Universe)
+	u, played := e.raw[mixer]
 	slot, ok := e.slotOf(cat, c)
 	if !played || !ok {
 		return 0
@@ -265,6 +270,10 @@ func (e *Engine) pickBeside(module string, b *board, after bool) {
 // other means, as on screen, it picks it up afresh.
 func (e *Engine) pickUp(rm *remote, mixer string, at float64) {
 	m := e.s.Module(mixer)
+	if mixer != rm.mixer {
+		// Another mixer, or none: its master is picked up afresh.
+		rm.mixer, rm.caught = mixer, false
+	}
 	if m == nil {
 		rm.pos, rm.moved = at, true
 		return
@@ -404,7 +413,13 @@ func (e *Engine) lightRemotes(now time.Time) {
 			continue
 		}
 		if b.took != rm.took {
-			rm.took, rm.flash = b.took, now.Add(tapFlash)
+			// Lit for no more than half the step, so that a fast chase
+			// still flashes.
+			lit := tapFlash
+			if gap := now.Sub(rm.stepped); !rm.stepped.IsZero() && gap > 0 && gap/2 < lit {
+				lit = gap / 2
+			}
+			rm.took, rm.stepped, rm.flash = b.took, now, now.Add(lit)
 		}
 		out, _ := e.hub.out(m.Device)
 		if out == nil {

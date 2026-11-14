@@ -680,14 +680,14 @@ func (e *Engine) boardsInto(mixer string, f func(id string, b *board)) {
 
 // boardsOver puts what the Boards wired into Mixer module mixer play
 // over u, the universe it merged from its other inputs: a Board has
-// the channels it sets, whatever else is wired into the mixer, under
-// the grand master. Of what a Board plays on a channel the grand master
+// the channels it sets, whatever else is wired into the mixer; the
+// grand master comes after. Of what a Board plays on a channel the master
 // dims, each at its level, the most shows, and what plays under shows
 // through by as much as the Board's fullest level there leaves: so a
 // scene fading crosses to another of the Board's that holds the channel,
 // or to what the mixer merged where none does. A fader held has its
 // channel over all of that.
-func (e *Engine) boardsOver(mixer string, master float64, u *dmx.Universe) {
+func (e *Engine) boardsOver(mixer string, u *dmx.Universe) {
 	e.boardsInto(mixer, func(_ string, b *board) {
 		var cover, top [dmx.Channels]float32
 		for _, p := range b.plays {
@@ -702,19 +702,11 @@ func (e *Engine) boardsOver(mixer string, master float64, u *dmx.Universe) {
 			if c <= 0 {
 				continue
 			}
-			v := float64(top[i])
-			if e.dims[i] && master < 1 {
-				v *= master
-			}
-			u[i] = dmx.Clamp8f(float64(u[i])*(1-float64(c)) + v)
+			u[i] = dmx.Clamp8f(float64(u[i])*(1-float64(c)) + float64(top[i]))
 		}
 		for i, v := range &b.over {
-			if v == 0 {
-				continue
-			}
-			u[i] = byte(v - 1)
-			if e.dims[i] && master < 1 {
-				u[i] = dmx.Clamp8f(float64(u[i]) * master)
+			if v != 0 {
+				u[i] = byte(v - 1)
 			}
 		}
 	})
@@ -730,6 +722,7 @@ func (e *Engine) Forget() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	clear(e.boards)
+	clear(e.raw)
 	clear(e.held)
 	e.recorded = nil
 	e.made = nil
