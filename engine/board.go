@@ -85,6 +85,10 @@ func Faders(s *show.Show, picked []string) []Fader {
 type board struct {
 	picked []string
 	held   map[Channel]byte
+	// over is what the faders hold, by universe slot from 0, each value
+	// one up, so that 0 says the slot is not held; any says one is.
+	over [dmx.Channels]uint16
+	any  bool
 }
 
 // Pick picks lights on Board module: those alone, or, with toggle,
@@ -191,17 +195,68 @@ func (e *Engine) playBoard(m *show.Module, cat fixtures.Catalog, live *Live) {
 		return
 	}
 	l.Clear()
+	b.over, b.any = [dmx.Channels]uint16{}, false
 	for c, v := range b.held {
 		p := e.s.Light(c.Light)
 		if p == nil {
 			continue
 		}
-		if slot, ok := cat.ResolveChannel(*p, c.Offset); ok {
+		slot, ok := cat.ResolveChannel(*p, c.Offset)
+		if !ok || slot < 1 || slot > dmx.Channels {
+			continue
+		}
+		// Two lights at one address share the slot: the higher value
+		// has it, whichever is come to first.
+		if uint16(v)+1 > b.over[slot-1] {
+			b.over[slot-1], b.any = uint16(v)+1, true
 			l.Set(slot, v)
 		}
 	}
 	e.values[portKey{m.ID, "out"}] = l
 	live.Boards[m.ID] = BoardState{Picked: b.picked, Held: b.held}
+}
+
+// boardsInto calls f with each Board wired into Mixer module mixer
+// whose faders hold a channel.
+func (e *Engine) boardsInto(mixer string, f func(id string, b *board)) {
+	if len(e.boards) == 0 {
+		return
+	}
+	for _, w := range e.s.Wires {
+		if w.To.Module != mixer {
+			continue
+		}
+		if b := e.boards[w.From.Module]; b != nil && b.any {
+			f(w.From.Module, b)
+		}
+	}
+}
+
+// fadersOver puts what the faders of the Boards wired into Mixer module
+// mixer hold over u, the universe it merged: a fader held plays what it
+// says, whatever else is wired into the mixer, under the grand master.
+func (e *Engine) fadersOver(mixer string, master float64, u *dmx.Universe) {
+	e.boardsInto(mixer, func(_ string, b *board) {
+		for i, v := range &b.over {
+			if v == 0 {
+				continue
+			}
+			u[i] = byte(v - 1)
+			if e.dims[i] && master < 1 {
+				u[i] = dmx.Clamp8f(float64(u[i]) * master)
+			}
+		}
+	})
+}
+
+// Forget lets go of what a show does not keep, as another show takes
+// its place: what each Board has picked and holds, and the overrides
+// held.
+func (e *Engine) Forget() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	clear(e.boards)
+	clear(e.held)
 }
 
 // boardsPlay puts in each Board's state what the Mixer it is wired into

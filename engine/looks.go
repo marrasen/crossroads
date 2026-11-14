@@ -339,6 +339,14 @@ func (e *Engine) owners(m string, on [3]bool, live *Live) {
 			}
 		}
 	}
+	// A Board's fader held has its channel, whatever else plays there.
+	e.boardsInto(m, func(id string, b *board) {
+		for i, v := range &b.over {
+			if v != 0 && (!on[1] || !e.dims[i]) {
+				live.Owners[i+1] = id
+			}
+		}
+	})
 }
 
 // A Note is a line of the Monitor's log: when, and what happened.

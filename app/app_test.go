@@ -485,3 +485,44 @@ func TestAUSBBoxsPortsAreLookedForOnTheSide(t *testing.T) {
 		t.Errorf("the ports found are %v", got)
 	}
 }
+
+// TestANewShowStartsWithNothingHeldOnTheBoard: a new show's Board and
+// Mixer have the IDs of the show before; what it held, and its blackout,
+// do not come along.
+func TestANewShowStartsWithNothingHeldOnTheBoard(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	b, mixer, dome := named(t, a, "Board").ID, named(t, a, "Mixer").ID, a.st.Show.Rig.Lights[0].ID
+	a.Handle(0, Pick{Module: b, Lights: []string{dome}})
+	a.Handle(0, Hold{Module: b, Channels: []engine.Channel{{Light: dome, Offset: 2}}, Value: 200})
+	a.Handle(0, Override{Module: mixer, Which: engine.Blackout, On: true})
+	a.Handle(0, New{})
+	if named(t, a, "Board").ID != b {
+		t.Fatal("the new show's board has another ID, so this test checks nothing")
+	}
+	live := a.eng.Tick()
+	if st := live.Boards[b]; len(st.Picked) != 0 || len(st.Held) != 0 || live.Stage[1] != 0 {
+		t.Errorf("a new show's board shows %+v and green plays %d", st, live.Stage[1])
+	}
+	if live.Overrides[mixer][0] {
+		t.Error("a new show opens blacked out")
+	}
+}
+
+// TestAUniverseStaysWithinWhatItsBoxTakes: an Art-Net port address is
+// 0 to 32767, an sACN universe 1 to 63999, as the box is picked too.
+func TestAUniverseStaysWithinWhatItsBoxTakes(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	out := named(t, a, "DMX out").ID
+	for _, c := range []struct {
+		device   string
+		universe int
+		want     int
+	}{
+		{"sacn", 40000, 40000}, {"artnet", 40000, 32767}, {"sacn", 0, 1}, {"sacn", 70000, 63999}, {"artnet", -3, 0},
+	} {
+		a.Handle(0, SetOutput{Module: out, Out: show.Output{Device: c.device, Host: "10.0.0.2", Universe: c.universe}})
+		if got := named(t, a, "DMX out").Out.Universe; got != c.want {
+			t.Errorf("%s universe %d is kept as %d, want %d", c.device, c.universe, got, c.want)
+		}
+	}
+}

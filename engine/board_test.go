@@ -170,3 +170,68 @@ func TestTheBoardsMixerAndOutput(t *testing.T) {
 		t.Error("a module wired to nothing has a mixer or an output")
 	}
 }
+
+// TestAFaderHeldPlaysWhatItSaysOverWhatElseIsWiredIn: the dome's red
+// plays at 0.8 from its Lights module; the Board's fader held lower
+// still has the channel, under the grand master, and the Monitor names
+// the Board.
+func TestAFaderHeldPlaysWhatItSaysOverWhatElseIsWiredIn(t *testing.T) {
+	r := newBoardRig(t)
+	if live := r.e.Tick(); live.Stage[0] <= 10 {
+		t.Fatalf("the dome's red plays %d before the board holds it", live.Stage[0])
+	}
+	r.e.Hold(r.board, []Channel{{Light: r.dome, Offset: 1}}, 10)
+	live := r.e.Tick()
+	if live.Stage[0] != 10 || live.Owners[1] != r.board {
+		t.Errorf("red held at 10 plays %d, owned by %q", live.Stage[0], live.Owners[1])
+	}
+	mixer := moduleNamed(t, &r.s, "Mixer")
+	mixer.Value = 0.5
+	r.e.Set(r.s)
+	if live := r.e.Tick(); live.Stage[0] != 5 {
+		t.Errorf("under a grand master at half, red held at 10 plays %d", live.Stage[0])
+	}
+	r.e.ClearBoard(r.board)
+	if live := r.e.Tick(); live.Stage[0] <= 10 || live.Owners[1] == r.board {
+		t.Errorf("cleared, red plays %d, owned by %q", live.Stage[0], live.Owners[1])
+	}
+}
+
+// TestTwoLightsAtOneAddressPlayTheHigherValueSteadily: a slot two
+// lights share has the higher of what is held for it, tick after tick.
+func TestTwoLightsAtOneAddressPlayTheHigherValueSteadily(t *testing.T) {
+	r := newBoardRig(t)
+	for i := range r.s.Rig.Lights {
+		if r.s.Rig.Lights[i].ID == r.par {
+			r.s.Rig.Lights[i].StartAddress = 2
+		}
+	}
+	r.e.Set(r.s)
+	// The dome's green and the par's dimmer are both channel 2.
+	r.e.Hold(r.board, []Channel{{Light: r.dome, Offset: 2}}, 200)
+	r.e.Hold(r.board, []Channel{{Light: r.par, Offset: 1}}, 50)
+	for i := range 100 {
+		if live := r.e.Tick(); live.Stage[1] != 200 {
+			t.Fatalf("tick %d: the shared channel plays %d, not 200", i, live.Stage[1])
+		}
+	}
+}
+
+// TestForgetLetsGoOfWhatAShowDoesNotKeep: what a Board picked and
+// holds, and an override held, go as another show takes the place.
+func TestForgetLetsGoOfWhatAShowDoesNotKeep(t *testing.T) {
+	r := newBoardRig(t)
+	mixer := moduleNamed(t, &r.s, "Mixer").ID
+	r.e.Pick(r.board, []string{r.dome}, false)
+	r.e.Hold(r.board, []Channel{{Light: r.dome, Offset: 2}}, 200)
+	r.e.Override(mixer, Blackout, true)
+	r.e.Forget()
+	r.e.Set(r.s)
+	live := r.e.Tick()
+	if st := live.Boards[r.board]; len(st.Picked) != 0 || len(st.Held) != 0 || live.Stage[1] != 0 {
+		t.Errorf("forgotten, the board shows %+v and green plays %d", st, live.Stage[1])
+	}
+	if live.Overrides[mixer][0] || live.Stage[0] == 0 {
+		t.Errorf("forgotten, blackout is %v and red plays %d", live.Overrides[mixer][0], live.Stage[0])
+	}
+}

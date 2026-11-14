@@ -95,6 +95,8 @@ type boardFader struct {
 	slot  int
 	held  bool
 	value byte
+	// drag is the channels a drag under way sets, nil for none.
+	drag []engine.Channel
 }
 
 // A lightPad is a pad that picks a light, or a group's lights.
@@ -145,9 +147,6 @@ func (b *boardPage) show(st *app.State, u *gunim.UI) {
 	if m := s.Module(b.mixer); m != nil && !b.master.Held() {
 		b.master.SetValue(float32(m.Value), u)
 	}
-	if m := s.Module(b.out); m != nil {
-		b.output.set(b.out, m.Out, st.Ports, u)
-	}
 	b.pads = b.pads[:0]
 	for _, p := range s.Rig.Lights {
 		b.pads = append(b.pads, lightPad{label: p.Name, lights: []string{p.ID}})
@@ -156,6 +155,10 @@ func (b *boardPage) show(st *app.State, u *gunim.UI) {
 		b.pads = append(b.pads, lightPad{label: g.Name, lights: g.MemberIDs, group: true})
 	}
 	b.refader(u)
+	// Once the output's fields are in the tree, which refader sees to.
+	if m := s.Module(b.out); m != nil {
+		b.output.set(b.out, m.Out, st.Ports, u)
+	}
 	u.Invalidate()
 }
 
@@ -198,10 +201,27 @@ func (b *boardPage) refader(u *gunim.UI) {
 		if i == len(b.faders) {
 			bf := &boardFader{s: widget.NewVerticalSlider(0, 255)}
 			bf.s.Snap = 1
-			hold := func(v float32, _ *gunim.UI) gunim.Intent {
-				return app.Hold{Module: b.board, Channels: bf.Channels, Value: int(v + 0.5)}
+			// A drag sets the channels the fader had as it began, though
+			// other lights are picked meanwhile, as from another window.
+			bf.s.OnChange = func(v float32, _ *gunim.UI) gunim.Intent {
+				chans := bf.Channels
+				if bf.s.Held() {
+					if bf.drag == nil {
+						bf.drag = bf.Channels
+					}
+					chans = bf.drag
+				} else {
+					bf.drag = nil
+				}
+				return app.Hold{Module: b.board, Channels: chans, Value: int(v + 0.5)}
 			}
-			bf.s.OnChange, bf.s.OnCommit = hold, hold
+			bf.s.OnCommit = func(v float32, _ *gunim.UI) gunim.Intent {
+				chans := bf.Channels
+				if bf.drag != nil {
+					chans, bf.drag = bf.drag, nil
+				}
+				return app.Hold{Module: b.board, Channels: chans, Value: int(v + 0.5)}
+			}
 			b.faders = append(b.faders, bf)
 		}
 		bf := b.faders[i]
@@ -348,7 +368,9 @@ func (b *boardPage) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Childr
 	cs := lay(b.clear, gunim.Constraints{Max: geom.Sz(160, buttonH)})
 	b.placed[b.clear] = geom.Rc(right-cs.W, y-4, cs.W, cs.H)
 	y += buttonH + 8
-	outH := float32(0)
+	// Room under the faders: for the output, or, with no mixer, for the
+	// line that says so.
+	outH := float32(36)
 	if b.mixer != "" {
 		outH = boardHead + outRowH + 28
 	}
@@ -389,9 +411,7 @@ func (b *boardPage) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Childr
 		s := lay(root, gunim.Constraints{Max: geom.Sz(w-2*boardSide, outRowH)})
 		b.placed[root] = geom.Rc(boardSide, y+boardHead, s.W, s.H)
 	}
-	if b.mixer != "" {
-		y += outH
-	}
+	y += outH
 	b.place(kids, byNode)
 	return geom.Sz(w, max(y+boardSide, viewH))
 }

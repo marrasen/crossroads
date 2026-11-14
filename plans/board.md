@@ -61,8 +61,10 @@ Three sources, merged per channel:
 1. **Scenes that are on.** Where two scenes set the same channel, the
    higher value wins.
 2. **The running chase**, merged with the scenes the same way.
-3. **The faders.** A channel a fader holds wins over scenes and chase.
-   **Clear** lets go of every fader, so the scenes show again.
+3. **The faders.** A channel a fader holds wins over scenes and chase,
+   and over whatever else is wired into the Mixer: a fader held plays
+   what it says, under the grand master and blackout. **Clear** lets go
+   of every fader, so the scenes show again.
 
 A fader's value is the channel's DMX value, 0 to 255, as on a hardware
 board. No curve is applied. A channel nothing sets is left out of the

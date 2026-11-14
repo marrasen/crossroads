@@ -630,16 +630,21 @@ func (e *Engine) open(o show.Output) *out {
 		opener = func() (dmx.Device, error) {
 			port := o.Port
 			if port == "" {
-				// Found: the first port that looks like an ENTTEC box.
 				ports, err := enttec.ListPorts()
 				if err != nil {
 					return nil, err
 				}
-				p, ok := enttec.PickPort(ports)
-				if !ok {
+				// An Open DMX cannot be asked what it is, so it is found
+				// only where one port could be it.
+				ports = slices.DeleteFunc(ports, func(p enttec.PortInfo) bool { return !p.IsFTDI() })
+				switch len(ports) {
+				case 0:
 					return nil, errors.New("no Open DMX found: pick its serial port")
+				case 1:
+					port = ports[0].Name
+				default:
+					return nil, errors.New("several ports could be the Open DMX: pick its serial port")
 				}
-				port = p.Name
 			}
 			return enttec.OpenOpenDMX(port)
 		}
@@ -800,7 +805,9 @@ func (e *Engine) Tick() Live {
 				e.heard[id] = append(e.heard[id], e.audLayer)
 			}
 			mx.SetMaster(m.Value)
-			u, on := e.overrideAll(id, mx.Merge(&e.dims))
+			merged := mx.Merge(&e.dims)
+			e.fadersOver(id, m.Value, &merged)
+			u, on := e.overrideAll(id, merged)
 			e.values[portKey{id, "out"}] = u
 			live.Values[id] = m.Value
 			live.Overrides[id] = on

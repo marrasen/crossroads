@@ -24,6 +24,7 @@ import (
 	"github.com/marrasen/gunim-dmx/dmx"
 	"github.com/marrasen/gunim-dmx/enttec"
 	"github.com/marrasen/gunim-dmx/fixtures"
+	"github.com/marrasen/gunim-dmx/sacn"
 	"github.com/marrasen/gunim/driver"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/widget/dock"
@@ -560,7 +561,7 @@ func (a *App) Handle(win int, in gunim.Intent) {
 	case SetOutput:
 		if m := s.Module(in.Module); m != nil {
 			m.Out = in.Out
-			m.Out.Universe = max(m.Out.Universe, 0)
+			m.Out.Universe = clampUniverse(m.Out)
 		}
 		if usb(in.Out) && a.st.Ports == nil {
 			a.findPorts()
@@ -814,6 +815,18 @@ const (
 
 // clampBPM is bpm, within the tempos a Tempo plays, to a tenth of a
 // beat a minute.
+// clampUniverse is the universe o sends to, kept within what its box
+// takes: an Art-Net port address, or an sACN universe.
+func clampUniverse(o show.Output) int {
+	switch o.Device {
+	case "artnet":
+		return min(max(o.Universe, 0), 32767)
+	case "sacn":
+		return min(max(o.Universe, sacn.MinUniverse), sacn.MaxUniverse)
+	}
+	return max(o.Universe, 0)
+}
+
 func clampBPM(bpm float64) float64 {
 	return math.Round(min(max(bpm, MinBPM), MaxBPM)*10) / 10
 }
@@ -973,6 +986,9 @@ func (a *App) replace(s show.Show, path string) {
 	clear(a.moving)
 	a.st = State{Show: s, Path: path, Songs: map[string]string{}, Ports: a.st.Ports}
 	clear(a.scanning)
+	// Another show: what the Boards held and the overrides held go
+	// with the one before, whose modules' IDs this one may share.
+	a.eng.Forget()
 	a.eng.Set(s)
 	a.scanSongs()
 	a.portsWanted()

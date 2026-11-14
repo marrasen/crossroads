@@ -758,3 +758,53 @@ func TestADMXOutOffersItsPortAndAddress(t *testing.T) {
 		t.Error("the Board tab's output row is not the DMX out's")
 	}
 }
+
+// TestABoardAddedToAShowWhoseOutputIsSetShowsTheOutput: a show with no
+// Board, its DMX out sending to Art-Net, gets a Board; the tab then
+// shows the output's fields, which were not in the tree before.
+func TestABoardAddedToAShowWhoseOutputIsSetShowsTheOutput(t *testing.T) {
+	s := show.Start()
+	var board show.Module
+	for _, m := range s.Modules {
+		if m.Kind == show.Board {
+			board = m
+		}
+	}
+	wires := append([]show.Wire(nil), s.Wires...)
+	s.RemoveModule(board.ID)
+	for i := range s.Modules {
+		if s.Modules[i].Kind == show.DMXOut {
+			s.Modules[i].Out = show.Output{Device: "artnet", Host: "10.0.0.2", Universe: 1}
+		}
+	}
+	w := testWindow(t, geom.Sz(1280, 800))
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: s}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		w.Frame(time.Second / 60)
+	}
+	tab, ok := frameOf(t, w).tabs[show.TabBoard].(*boardTab)
+	if !ok || tab.page.board != "" {
+		t.Fatal("the Board tab is not in front, or plays a board the show does not have")
+	}
+	with := s.Clone()
+	with.Modules = append(with.Modules, board)
+	with.Wires = wires
+	if err := c.Publish(app.ShowTopic, app.State{Show: with}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		w.Frame(time.Second / 60)
+	}
+	b := tab.page
+	if b.board == "" || b.out == "" {
+		t.Fatalf("the board added, the tab plays board %q and output %q", b.board, b.out)
+	}
+	if _, ok := frameUI(t, w).Bounds(b.output.root); !ok {
+		t.Error("the output's fields are not drawn")
+	}
+}
