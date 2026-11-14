@@ -25,9 +25,12 @@ a board, a mixer, a DMX out and the stage view, all wired up:
   light, or a group, to pick it; Ctrl+click picks more. A fader for
   each channel of what is picked holds its DMX value, 0 to 255, until
   Clear lets go. Lights of different types get a fader for each thing
-  they do between them. The grand master, Blackout and Flash are
-  there, and the DMX box it all goes out on: its serial port, or its
-  address and universe.
+  they do between them. Record, then one of sixteen pads, stores what
+  the board plays as a scene on that pad, and lets go of the faders; a
+  pad pressed turns its scene on and off, fading over the scene fade,
+  and a right click renames or deletes it. The grand master, Blackout
+  and Flash are there, and the DMX box it all goes out on: its serial
+  port, or its address and universe.
 - **Faders** is a fader for each fader module, and the grand master.
 - **Rig** is the lights, their types and their addresses.
 - **Player** is the playlist and the transport.

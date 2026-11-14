@@ -23,6 +23,8 @@ var (
 	songInk  = theme.Color("crossroads.kind.player", color.NRGBA{R: 0x9b, G: 0xe8, B: 0xff, A: 0xff})
 	midiInk  = theme.Color("crossroads.kind.midi", color.NRGBA{R: 0xb4, G: 0xa7, B: 0xff, A: 0xff})
 	lookInk  = theme.Color("crossroads.kind.look", color.NRGBA{R: 0xff, G: 0x9f, B: 0x43, A: 0xff})
+	// recordInk marks a Board waiting for a pad to record onto.
+	recordInk = theme.Color("crossroads.board.record", color.NRGBA{R: 0xff, G: 0x55, B: 0x60, A: 0xff})
 )
 
 // signalInk is signal s's colour.

@@ -9,6 +9,7 @@ import (
 	"github.com/marrasen/crossroads/engine"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
+	"github.com/marrasen/gunim-dmx/dmx"
 	"github.com/marrasen/gunim-dmx/fixtures"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/icon"
@@ -18,7 +19,7 @@ import (
 )
 
 // boardTab is the Board tab, which plays the show's first Board: its
-// page, scrolled.
+// page, with the menu a scene's pad opens, scrolled.
 type boardTab struct {
 	page   *boardPage
 	scroll *widget.Scroll
@@ -26,7 +27,7 @@ type boardTab struct {
 
 func newBoardTab() *boardTab {
 	b := newBoardPage()
-	return &boardTab{page: b, scroll: widget.NewScroll(b)}
+	return &boardTab{page: b, scroll: widget.NewScroll(b.padMenu())}
 }
 
 func (t *boardTab) show(st *app.State, u *gunim.UI) { t.page.show(st, u) }
@@ -53,14 +54,19 @@ func (t *boardTab) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids gu
 	}
 }
 
-// boardPage is the Board tab's page, as a lighting desk: a pad for
-// each light of the rig and each group, to pick with; a fader for each
-// channel of what is picked, and Clear; the grand master, Blackout and
-// Flash of the mixer the Board is wired into; and the DMX out that
-// mixer feeds. A show with no Board offers to add one.
+// boardPage is the Board tab's page, as a lighting desk: the pads of
+// the scenes, with Record and the scene fade; a pad for each light of
+// the rig and each group, to pick with; a fader for each channel of
+// what is picked, and Clear; the grand master, Blackout and Flash of
+// the mixer the Board is wired into; and the DMX out that mixer feeds.
+// A show with no Board offers to add one.
 type boardPage struct {
 	st     *app.State
 	played engine.Live
+	// menu is the menu a scene's pad opens, and menuOpen whether it
+	// was open when last looked at: as it opened, and at each tick.
+	menu     *widget.ContextMenu
+	menuOpen bool
 	// view is how much of the page the tab shows.
 	view geom.Size
 	// board is the Board the page plays, mixer the Mixer it is wired
@@ -71,19 +77,24 @@ type boardPage struct {
 	black             *widget.Button
 	flash             *holdButton
 	output            *outputFields
+	// record is Record, and fade the scene fade; scenes are the pads of
+	// the scenes, one for each pad of the Board.
+	record *widget.Button
+	fade   *widget.Slider
+	scenes [show.Pads]scenePad
 	// picked are the lights picked, as the engine last said, and faders
 	// a fader for each channel of them.
 	picked []string
 	faders []*boardFader
 	kids   []gunim.Node
 	pads   []lightPad
-	// lightsY, headY and outY are where the lights, the channels and
-	// the output start, area is the faders' room, and column the
-	// master's.
-	lightsY, headY, outY float32
-	area, column         geom.Rect
-	per                  float32
-	placed               map[gunim.Node]geom.Rect
+	// scenesY, lightsY, headY and outY are where the scenes, the
+	// lights, the channels and the output start, area is the faders'
+	// room, and column the master's.
+	scenesY, lightsY, headY, outY float32
+	area, column                  geom.Rect
+	per                           float32
+	placed                        map[gunim.Node]geom.Rect
 }
 
 // A boardFader is one of the page's channel faders: what it sets, its
@@ -97,6 +108,16 @@ type boardFader struct {
 	value byte
 	// drag is the channels a drag under way sets, nil for none.
 	drag []engine.Channel
+}
+
+// A scenePad is a pad for a scene: the scene's name, where it has one,
+// the colour it plays and how bright, and its place.
+type scenePad struct {
+	name   string
+	full   bool
+	colour color.NRGBA
+	level  float32
+	r      geom.Rect
 }
 
 // A lightPad is a pad that picks a light, or a group's lights.
@@ -130,7 +151,77 @@ func newBoardPage() *boardPage {
 		return app.Override{Module: b.mixer, Which: engine.FlashAll, On: down}
 	})
 	b.output = newOutputFields("", false)
+	b.record = widget.NewButton("Record")
+	b.record.Icon = icon.Disc
+	b.record.Tooltip = "Then press a pad to store on it what the board plays. Right-click a pad to rename or delete its scene."
+	b.record.OnClick = func(*gunim.UI) gunim.Intent { return app.PressRecord{Module: b.board} }
+	b.fade = widget.NewSlider(0, show.MaxSceneFade)
+	b.fade.Label, b.fade.Snap = "Scene fade", 0.1
+	// The seconds beside it follow it as it moves.
+	b.fade.OnChange = func(_ float32, u *gunim.UI) gunim.Intent {
+		u.Invalidate()
+		return nil
+	}
+	b.fade.OnCommit = func(v float32, _ *gunim.UI) gunim.Intent {
+		return app.SetSceneFade{Module: b.board, Seconds: float64(v)}
+	}
 	return b
+}
+
+// padMenu is the page with the menu a scene's pad opens on a right
+// click: Rename and Delete, for the scene on the pad pressed then.
+func (b *boardPage) padMenu() *widget.ContextMenu {
+	c := widget.NewContextMenu(b, nil)
+	b.menu = c
+	var board string
+	pad := -1
+	c.Prepare = func(at geom.Point, _ *gunim.UI) bool {
+		board, pad = b.board, b.sceneAt(at)
+		if board == "" || pad < 0 || !b.scenes[pad].full {
+			return false
+		}
+		c.SetItems([]widget.MenuItem{{Label: "Rename…", Icon: icon.Pencil}, {Label: "Delete", Icon: icon.Trash2}})
+		b.menuOpen = true
+		return true
+	}
+	c.OnPick = func(i int, u *gunim.UI) gunim.Intent {
+		if i == 1 {
+			return app.DeleteScene{Module: board, Pad: pad}
+		}
+		b.rename(board, pad, u)
+		return nil
+	}
+	return c
+}
+
+// rename asks, over the window, for a new name for the scene on pad of
+// Board board.
+func (b *boardPage) rename(board string, pad int, u *gunim.UI) {
+	root := u.Root()
+	if root == nil {
+		return
+	}
+	name := b.scenes[pad].name
+	d := widget.NewDialog("Rename the scene on pad " + strconv.Itoa(pad+1))
+	field := widget.NewTextField()
+	field.SetText(name, nil)
+	field.Select(0, len([]rune(name)))
+	d.Body = widget.NewForm().Add("Name", field)
+	d.SetButtons("Rename", "Cancel")
+	d.OnAccept = func(*gunim.UI) gunim.Intent {
+		return app.RenameScene{Module: board, Pad: pad, Name: field.Text()}
+	}
+	u.Insert(root, d)
+}
+
+// sceneAt is the pad of a scene at p, -1 for none.
+func (b *boardPage) sceneAt(p geom.Point) int {
+	for i := range b.scenes {
+		if b.scenes[i].r.Contains(p) {
+			return i
+		}
+	}
+	return -1
 }
 
 // show follows the show: the first Board, its mixer and its output, and
@@ -146,6 +237,20 @@ func (b *boardPage) show(st *app.State, u *gunim.UI) {
 	}
 	if m := s.Module(b.mixer); m != nil && !b.master.Held() {
 		b.master.SetValue(float32(m.Value), u)
+	}
+	cat := s.Catalog()
+	for i := range b.scenes {
+		sp := &b.scenes[i]
+		sp.name, sp.full, sp.colour, sp.level = "", false, color.NRGBA{}, 0
+		if m := s.Module(b.board); m != nil {
+			if sc := m.Scene(i); sc != nil {
+				sp.name, sp.full = sc.Name, true
+				sp.colour, sp.level = sceneLook(s, cat, sc)
+			}
+		}
+	}
+	if m := s.Module(b.board); m != nil && !b.fade.Held() {
+		b.fade.SetValue(float32(m.SceneFade), u)
 	}
 	b.pads = b.pads[:0]
 	for _, p := range s.Rig.Lights {
@@ -166,6 +271,7 @@ func (b *boardPage) show(st *app.State, u *gunim.UI) {
 // holds or its light plays, the master and the overrides.
 func (b *boardPage) live(l engine.Live, u *gunim.UI) {
 	b.played = l
+	b.menuOpen = b.menu != nil && b.menu.Focusable()
 	st := l.Boards[b.board]
 	if !slices.Equal(st.Picked, b.picked) {
 		b.picked = slices.Clone(st.Picked)
@@ -185,7 +291,46 @@ func (b *boardPage) live(l engine.Live, u *gunim.UI) {
 	}
 	b.black.Active = l.Overrides[b.mixer][0]
 	b.clear.Disabled = len(st.Held) == 0
+	// Red while it waits for a pad.
+	b.record.Kind = widget.ButtonPlain
+	if st.Record {
+		b.record.Kind = widget.ButtonDanger
+	}
 	u.Invalidate()
+}
+
+// sceneLook is the colour scene sc of show s plays its lights at, and
+// how bright, 0 to 1: their colours mixed, each as bright as it plays,
+// and the brightest light's level.
+func sceneLook(s *show.Show, cat fixtures.Catalog, sc *show.Scene) (c color.NRGBA, lit float32) {
+	var u dmx.Universe
+	var lights []fixtures.Patch
+	for _, p := range s.Rig.Lights {
+		chans, ok := sc.Values[p.ID]
+		if !ok {
+			continue
+		}
+		lights = append(lights, p)
+		for off, v := range chans {
+			if slot, ok := cat.ResolveChannel(p, off); ok && slot >= 1 && slot <= dmx.Channels {
+				u[slot-1] = v
+			}
+		}
+	}
+	var r, g, bl, peak float32
+	for _, p := range lights {
+		c, level := lampLook(cat, &u, p)
+		r += float32(c.R) * level
+		g += float32(c.G) * level
+		bl += float32(c.B) * level
+		peak = max(peak, level)
+	}
+	top := max(r, g, bl)
+	if top <= 0 {
+		return color.NRGBA{}, 0
+	}
+	k := 255 / top
+	return color.NRGBA{R: uint8(r * k), G: uint8(g * k), B: uint8(bl * k), A: 0xff}, peak
 }
 
 // refader makes a fader for each channel of the lights picked, keeping
@@ -249,7 +394,7 @@ func (b *boardPage) keep(u *gunim.UI) {
 	case "":
 		want = append(want, b.add)
 	default:
-		want = append(want, b.clear)
+		want = append(want, b.record, b.fade, b.clear)
 		for _, f := range b.faders {
 			want = append(want, f.s)
 		}
@@ -318,11 +463,17 @@ const (
 	masterW     = 132
 	buttonH     = 32
 	outRowH     = 34
+	sceneH      = 40
+	sceneGap    = 6
+	scenesRow   = 8
+	fadeW       = 120
 )
 
-// Layout implements [gunim.Node]: the lights' pads in rows across the
-// top; under them the faders, as wide as they have room for, the
-// master's column at their right; and the output along the bottom.
+// Layout implements [gunim.Node]: the scenes' pads across the top,
+// eight a row, under Record and the scene fade; under them the lights'
+// pads in rows, then the faders, as wide as they have room for, the
+// master's column at the right of both; and the output along the
+// bottom.
 func (b *boardPage) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Children) geom.Size {
 	w := c.Max.W
 	viewH := b.view.H
@@ -351,11 +502,24 @@ func (b *boardPage) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Childr
 		return geom.Sz(w, viewH)
 	}
 	b.master.Fill = mixerInk.Get(f.Theme)
-	right := w - boardSide
+	full := w - boardSide
+	right := full
 	if b.mixer != "" {
 		right -= masterW + boardSide
 	}
 	y := float32(boardSide)
+	b.scenesY = y
+	rs := lay(b.record, gunim.Constraints{Max: geom.Sz(160, buttonH)})
+	b.placed[b.record] = geom.Rc(full-rs.W, y-4, rs.W, rs.H)
+	fs := lay(b.fade, gunim.Constraints{Max: geom.Sz(fadeW, buttonH)})
+	b.placed[b.fade] = geom.Rc(full-rs.W-16-fadeW, y-4+(rs.H-fs.H)/2, fs.W, fs.H)
+	y += buttonH + 2
+	cw := (full - boardSide - (scenesRow-1)*sceneGap) / scenesRow
+	for i := range b.scenes {
+		col, row := i%scenesRow, i/scenesRow
+		b.scenes[i].r = geom.Rc(boardSide+float32(col)*(cw+sceneGap), y+float32(row)*(sceneH+sceneGap), cw, sceneH)
+	}
+	y += float32((len(b.scenes)+scenesRow-1)/scenesRow)*(sceneH+sceneGap) + 8
 	b.lightsY = y
 	y += boardHead
 	cols := max(int((right-boardSide+lightGap)/(lightW+lightGap)), 1)
@@ -372,9 +536,11 @@ func (b *boardPage) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Childr
 	// line that says so.
 	outH := float32(36)
 	if b.mixer != "" {
-		outH = boardHead + outRowH + 28
+		outH = boardHead + outRowH + 4
 	}
-	h := max(viewH-boardSide-outH-y, minStripH)
+	// The faders fill what is left, less the gap over the output and
+	// the page's foot.
+	h := max(viewH-y-12-outH-12, minStripH)
 	n := len(b.faders)
 	per := float32(boardStripW)
 	if n > 0 {
@@ -392,8 +558,8 @@ func (b *boardPage) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Childr
 	}
 	b.area, b.per = geom.Rc(boardSide, y, right-boardSide, h), per
 	if b.mixer != "" {
-		// The master's column, from the top down to the faders' foot.
-		x, top := w-boardSide-masterW, float32(boardSide)
+		// The master's column, from the lights down to the faders' foot.
+		x, top := w-boardSide-masterW, b.lightsY
 		b.column = geom.Rc(x, top, masterW, y+h-top)
 		sh := max(y+h-top-stripName-2*(buttonH+8), 60)
 		s := lay(b.master, gunim.Constraints{Max: geom.Sz(masterW, sh), Min: geom.Sz(0, sh)})
@@ -413,7 +579,7 @@ func (b *boardPage) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Childr
 	}
 	y += outH
 	b.place(kids, byNode)
-	return geom.Sz(w, max(y+boardSide, viewH))
+	return geom.Sz(w, max(y+12, viewH))
 }
 
 // place places each child where Layout put it. One on its way out
@@ -463,13 +629,14 @@ func (b *boardPage) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids g
 	s := &b.st.Show
 	cat := s.Catalog()
 	st := b.played.Boards[b.board]
+	accent := widget.Accent.Get(th)
+	b.paintScenes(p, f, &st)
 	h := bold.Shape("Lights", 12)
 	h.Paint(p, geom.Pt(boardSide, b.lightsY), quiet)
 	if len(b.pads) == 0 {
 		msg := face.Shape("No lights in the rig. Add them on the Rig tab.", 12)
 		msg.Paint(p, geom.Pt(boardSide, b.lightsY+boardHead+8), quiet)
 	}
-	accent := widget.Accent.Get(th)
 	for _, pd := range b.pads {
 		lit := !slices.ContainsFunc(pd.lights, func(id string) bool { return !slices.Contains(st.Picked, id) }) && len(pd.lights) > 0
 		fill := faded(ink, 0.06)
@@ -547,6 +714,72 @@ func (b *boardPage) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids g
 	}
 }
 
+// paintScenes paints the scenes' head, the scene fade, and the pads:
+// one with a scene shows its name and a swatch of its colour, lit as it
+// is on and as far as it has faded in; an empty one is dim. While Record
+// waits, the head says so and every pad is ringed in its colour.
+func (b *boardPage) paintScenes(p *paint.Painter, f gunim.Frame, st *engine.BoardState) {
+	th := f.Theme
+	ink := widget.Ink.Get(th)
+	quiet := faded(ink, 0.55)
+	face, bold := widget.Font.Get(th), widget.BoldFont.Get(th)
+	fade := widget.TextFade.Get(th)
+	accent, red := widget.Accent.Get(th), recordInk.Get(th)
+	fr := b.placed[b.fade]
+	secs := strconv.FormatFloat(float64(b.fade.Value()), 'f', 1, 32)
+	ft := face.Shape("Fade "+secs+" s", 12)
+	fx := fr.Min.X - 8 - ft.Advance
+	ft.Paint(p, geom.Pt(fx, b.scenesY+4), quiet)
+	head, hc := "Scenes", quiet
+	if st.Record {
+		head, hc = "Recording · press a pad to store what plays, or Esc", red
+	} else if !slices.ContainsFunc(b.scenes[:], func(sp scenePad) bool { return sp.full }) {
+		head = "Scenes · Record, then a pad, stores what plays"
+	}
+	h := bold.Shape(head, 12)
+	h.PaintFaded(p, geom.Pt(boardSide, b.scenesY+4), hc, fx-boardSide-12, fade)
+	for i := range b.scenes {
+		sp := &b.scenes[i]
+		r := sp.r
+		on, level := b.sceneLit(i)
+		fill := faded(ink, 0.03)
+		if sp.full {
+			fill = faded(ink, 0.07)
+		}
+		p.RRect(r, 10, paint.Solid(fill))
+		if level > 0 {
+			p.RRect(r, 10, paint.Solid(faded(accent, 0.35*level)))
+		}
+		if on {
+			p.RRect(geom.Rc(r.Min.X, r.Min.Y, 4, r.Size().H), 2, paint.Solid(accent))
+		}
+		if st.Record {
+			p.RRectStroke(r, 10, paint.Fill{}, paint.Stroke{Width: 1.5, Color: faded(red, 0.8)})
+		}
+		num := face.Shape(strconv.Itoa(i+1), 10)
+		nc := faded(ink, 0.3)
+		if sp.full {
+			nc = quiet
+		}
+		num.Paint(p, geom.Pt(r.Max.X-8-num.Advance, r.Min.Y+6), nc)
+		if !sp.full {
+			continue
+		}
+		sw := geom.Rc(r.Min.X+10, r.Min.Y+8, 12, 12)
+		p.RRect(sw, 6, paint.Solid(faded(ink, 0.12)))
+		p.RRect(sw, 6, paint.Solid(faded(sp.colour, max(sp.level, 0.15))))
+		t := bold.Shape(sp.name, 12)
+		t.PaintFaded(p, geom.Pt(r.Min.X+10, r.Min.Y+24), ink, r.Size().W-18, fade)
+	}
+}
+
+// sceneLit reports, as the engine last said, whether pad's scene is on,
+// and how far it has faded in, 0 to 1.
+func (b *boardPage) sceneLit(pad int) (on bool, level float32) {
+	st := b.played.Boards[b.board]
+	return slices.Contains(st.On, pad), float32(st.Levels[pad])
+}
+
 // paintOutput paints the output's head and how it stands, or why there
 // is none.
 func (b *boardPage) paintOutput(p *paint.Painter, f gunim.Frame, box geom.Size) {
@@ -571,7 +804,8 @@ func (b *boardPage) paintOutput(p *paint.Painter, f gunim.Frame, box geom.Size) 
 		return
 	}
 	h := bold.Shape("Output · "+m.Name, 12)
-	h.PaintFaded(p, geom.Pt(boardSide, y), quiet, box.W-2*boardSide, fade)
+	hw := min(h.Advance, (box.W-2*boardSide)/2)
+	h.PaintFaded(p, geom.Pt(boardSide, y), quiet, hw, fade)
 	says, connected := outSays(m, b.played)
 	dot := quiet
 	switch {
@@ -581,10 +815,11 @@ func (b *boardPage) paintOutput(p *paint.Painter, f gunim.Frame, box geom.Size) 
 	case m.Out.Device != "" && b.played.Outs[m.ID].Err != "":
 		dot = stageInk.Get(th)
 	}
-	sy := y + boardHead + outRowH + 8
-	p.RRect(geom.Rc(boardSide, sy+3, 8, 8), 4, paint.Solid(dot))
+	// How it stands, on the head's line.
+	x := boardSide + hw + 16
+	p.RRect(geom.Rc(x, y+4, 8, 8), 4, paint.Solid(dot))
 	t := face.Shape(says, 11)
-	t.PaintFaded(p, geom.Pt(boardSide+14, sy), ink, box.W-2*boardSide-14, fade)
+	t.PaintFaded(p, geom.Pt(x+14, y+1), ink, box.W-boardSide-x-14, fade)
 }
 
 // dim reports whether n is a channel fader nothing holds, drawn dim.
@@ -610,12 +845,27 @@ func (b *boardPage) pickedText() string {
 	return countOf(len(b.picked), "light")
 }
 
-// Handle implements [gunim.Handler]: a pad pressed picks its light, or
-// its group's, alone; with Ctrl, it adds them, or takes them out.
+// Handle implements [gunim.Handler]: a scene's pad pressed presses it
+// on the Board, which records onto it where Record waits, or turns its
+// scene on or off; a light's pad picks its light, or its group's,
+// alone, and with Ctrl, adds them, or takes them out.
 func (b *boardPage) Handle(e input.Event, u *gunim.UI) bool {
 	d, ok := e.(input.PointerDown)
 	if !ok || d.Button != input.ButtonPrimary || b.board == "" {
 		return false
+	}
+	if b.menuOpen {
+		// A pad's menu was open, and this press closed it, as it took
+		// the focus: it does no more than that.
+		b.menuOpen = false
+		if b.menu.Focusable() {
+			b.menu.Toggle(d.Pos, u)
+		}
+		return true
+	}
+	if i := b.sceneAt(d.Pos); i >= 0 {
+		u.Send(b, app.PressPad{Module: b.board, Pad: i})
+		return true
 	}
 	for _, pd := range b.pads {
 		if pd.r.Contains(d.Pos) {
@@ -624,6 +874,17 @@ func (b *boardPage) Handle(e input.Event, u *gunim.UI) bool {
 		}
 	}
 	return false
+}
+
+// CatchKey implements [gunim.KeyCatcher]: Escape, while Record waits,
+// gives up.
+func (b *boardPage) CatchKey(e input.Event, u *gunim.UI) bool {
+	k, ok := e.(input.KeyPress)
+	if !ok || k.Key != input.KeyEscape || b.board == "" || !b.played.Boards[b.board].Record {
+		return false
+	}
+	u.Send(b, app.GiveUpRecord{Module: b.board})
+	return true
 }
 
 // countOf is n things, as "1 light" or "3 lights".

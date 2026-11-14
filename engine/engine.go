@@ -332,8 +332,11 @@ type Engine struct {
 	// show's effect programmes, by ID.
 	effects  map[string]*fxRunner
 	programs map[string]fx.Program
-	// boards are each Board's lights picked and channels held.
-	boards map[string]*board
+	// boards are each Board's lights picked, channels held and scenes
+	// playing, and recorded the scenes they recorded, for the
+	// application to keep.
+	boards   map[string]*board
+	recorded []Recorded
 	// audition is the pattern the editor plays while its test button
 	// is held, audLayer its light, and audBeats the beat it counts
 	// where the show has no Tempo.
@@ -794,10 +797,13 @@ func (e *Engine) Tick() Live {
 			}
 			e.heard[id] = e.heard[id][:0]
 			for i := 1; i <= mixerIns; i++ {
-				if l, ok := e.input(id, "in"+string(rune('0'+i))).(*mix.Layer); ok {
-					mx.Add(l)
-					e.heard[id] = append(e.heard[id], l)
+				l, ok := e.input(id, "in"+string(rune('0'+i))).(*mix.Layer)
+				if !ok || e.boards[e.layerOf[l]] != nil {
+					// A Board's light is not merged: it goes over the rest.
+					continue
 				}
+				mx.Add(l)
+				e.heard[id] = append(e.heard[id], l)
 			}
 			if e.audition != nil {
 				// The pattern being tried, over all else.
@@ -806,7 +812,7 @@ func (e *Engine) Tick() Live {
 			}
 			mx.SetMaster(m.Value)
 			merged := mx.Merge(&e.dims)
-			e.fadersOver(id, m.Value, &merged)
+			e.boardsOver(id, m.Value, &merged)
 			u, on := e.overrideAll(id, merged)
 			e.values[portKey{id, "out"}] = u
 			live.Values[id] = m.Value
@@ -866,7 +872,7 @@ func (e *Engine) Tick() Live {
 		case show.Effect:
 			e.effect(m, cat, now, &live)
 		case show.Board:
-			e.playBoard(m, cat, &live)
+			e.playBoard(m, cat, dt, &live)
 		case show.Button:
 			fired := e.pressed[id]
 			e.values[portKey{id, "out"}] = fired

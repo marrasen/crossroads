@@ -142,8 +142,9 @@ const (
 	// Effect plays one of the show's effect programmes as it is
 	// triggered: a short move over its lights' channels.
 	Effect Kind = "effect"
-	// Board is a lighting desk on the Board tab: the lights picked, and
-	// a fader for each of their channels, which holds its DMX value.
+	// Board is a lighting desk on the Board tab: the lights picked, a
+	// fader for each of their channels, which holds its DMX value, and
+	// scenes on pads.
 	Board Kind = "board"
 )
 
@@ -276,6 +277,54 @@ type Module struct {
 	Program string `json:"program,omitempty"`
 	// Routes are a MIDI routes module's routes, in order.
 	Routes []routing.Route `json:"routes,omitempty"`
+	// Scenes are a Board's scenes, in the order of their pads, and
+	// SceneFade how many seconds one takes to fade in or out.
+	Scenes    []Scene `json:"scenes,omitempty"`
+	SceneFade float64 `json:"sceneFade,omitempty"`
+}
+
+// Pads is how many pads a Board has for scenes, and MaxSceneFade the
+// longest its scenes fade, in seconds.
+const (
+	Pads         = 16
+	MaxSceneFade = 10.0
+)
+
+// A Scene is a look a Board stored on one of its pads: its name, and
+// the value it holds for each channel, 0 to 255, by light ID, then by
+// the channel's offset in the light, from 1.
+type Scene struct {
+	// Pad is the pad it is on, from 0.
+	Pad    int                     `json:"pad"`
+	Name   string                  `json:"name"`
+	Values map[string]map[int]byte `json:"values"`
+}
+
+// Clone returns a deep copy of c.
+func (c Scene) Clone() Scene {
+	if c.Values != nil {
+		v := make(map[string]map[int]byte, len(c.Values))
+		for id, chans := range c.Values {
+			v[id] = maps.Clone(chans)
+		}
+		c.Values = v
+	}
+	return c
+}
+
+// Scene returns the scene on pad of a Board, or nil.
+func (m *Module) Scene(pad int) *Scene {
+	if i := slices.IndexFunc(m.Scenes, func(c Scene) bool { return c.Pad == pad }); i >= 0 {
+		return &m.Scenes[i]
+	}
+	return nil
+}
+
+// SetScene puts c on its pad of a Board, in place of the scene there.
+func (m *Module) SetScene(c Scene) {
+	m.Scenes = slices.DeleteFunc(m.Scenes, func(o Scene) bool { return o.Pad == c.Pad })
+	i, _ := slices.BinarySearchFunc(m.Scenes, c.Pad, func(o Scene, pad int) int { return o.Pad - pad })
+	m.Scenes = slices.Insert(m.Scenes, i, c)
 }
 
 // A ControlKind is what a controller's control is.
@@ -482,6 +531,10 @@ func (s *Show) Clone() Show {
 		c.Modules[i].Controls = slices.Clone(c.Modules[i].Controls)
 		c.Modules[i].Levels = maps.Clone(c.Modules[i].Levels)
 		c.Modules[i].Routes = slices.Clone(c.Modules[i].Routes)
+		c.Modules[i].Scenes = slices.Clone(c.Modules[i].Scenes)
+		for j := range c.Modules[i].Scenes {
+			c.Modules[i].Scenes[j] = c.Modules[i].Scenes[j].Clone()
+		}
 	}
 	c.Wires = slices.Clone(s.Wires)
 	c.Songs = slices.Clone(s.Songs)
@@ -495,13 +548,39 @@ func (s *Show) RemoveModule(id string) {
 	s.Wires = slices.DeleteFunc(s.Wires, func(w Wire) bool { return w.From.Module == id || w.To.Module == id })
 }
 
-// RemoveLight takes light id out of the rig, off the stage and out of
-// every Lights module.
+// RemoveLight takes light id out of the rig, off the stage, out of
+// every Lights module and out of every scene.
 func (s *Show) RemoveLight(id string) {
 	s.Rig.Lights = slices.DeleteFunc(s.Rig.Lights, func(p fixtures.Patch) bool { return p.ID == id })
 	delete(s.Stage.Spots, id)
 	for i := range s.Modules {
 		s.Modules[i].Lights = slices.DeleteFunc(s.Modules[i].Lights, func(l string) bool { return l == id })
+	}
+	s.keepSceneLights()
+}
+
+// keepSceneLights takes the lights the rig does not have out of every
+// scene, and a scene left holding nothing off its pad.
+func (s *Show) keepSceneLights() {
+	for i := range s.Modules {
+		m := &s.Modules[i]
+		empty := false
+		for j := range m.Scenes {
+			c := &m.Scenes[j]
+			for id := range c.Values {
+				if s.Light(id) == nil {
+					// A new map, as the show this one was cloned from may share it.
+					c.Values = maps.Clone(c.Values)
+					maps.DeleteFunc(c.Values, func(id string, _ map[int]byte) bool { return s.Light(id) == nil })
+					break
+				}
+			}
+			empty = empty || len(c.Values) == 0
+		}
+		if empty {
+			// A new slice, for the same reason.
+			m.Scenes = slices.DeleteFunc(slices.Clone(m.Scenes), func(c Scene) bool { return len(c.Values) == 0 })
+		}
 	}
 }
 
@@ -537,8 +616,9 @@ func (s *Show) Save(path string) error {
 }
 
 // Mend makes s whole, as one read from a file another build wrote: the
-// stage has a size, wires join modules that are there, and every tab
-// is in the layout.
+// stage has a size, wires join modules that are there, scenes hold
+// lights that are there, each on a pad of its own, and every tab is in
+// the layout.
 func (s *Show) Mend() {
 	if s.Stage.Width <= 0 || s.Stage.Depth <= 0 {
 		s.Stage.Width, s.Stage.Depth = 8, 5
@@ -546,7 +626,17 @@ func (s *Show) Mend() {
 	s.Wires = slices.DeleteFunc(s.Wires, func(w Wire) bool { return s.Module(w.From.Module) == nil || s.Module(w.To.Module) == nil })
 	for i := range s.Modules {
 		s.Modules[i].Lights = slices.DeleteFunc(s.Modules[i].Lights, func(id string) bool { return s.Light(id) == nil })
+		if m := &s.Modules[i]; len(m.Scenes) > 0 {
+			scenes := m.Scenes
+			m.Scenes = nil
+			for _, c := range scenes {
+				if c.Pad >= 0 && c.Pad < Pads && m.Scene(c.Pad) == nil {
+					m.SetScene(c)
+				}
+			}
+		}
 	}
+	s.keepSceneLights()
 	if s.Layout.Window(0) != nil {
 		// Every tab is somewhere, in the main window where it was not.
 		for _, t := range Tabs {

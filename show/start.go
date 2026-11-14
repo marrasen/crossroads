@@ -54,8 +54,8 @@ func TabTitle(t string) string {
 // Dome at address 1, in the middle of an eight by five metre stage; a
 // Lights module playing it; a fader for each of its colours, wired in;
 // a mixer, and a Board wired into its second input; a DMX out sending
-// nowhere yet, and the stage view. Routes and Rig stand on the left,
-// the Stage over the Board on the right.
+// nowhere yet, and the stage view. The Board stands in front on the
+// left, the Stage over the Faders on the right.
 func Start() Show {
 	s := Show{Name: "New show", Stage: Stage{Width: 8, Depth: 5, Spots: map[string]Spot{}}}
 	dome := fixtures.Patch{ID: s.NewID("light"), Name: "Dome", DefinitionID: "fun-generation-led-diamond-dome-mk2",
@@ -94,23 +94,22 @@ func Start() Show {
 	return s
 }
 
-// DefaultLayout is the layout a new show opens with: Routes, Rig,
-// Controllers and Monitor on the left, the Stage over the Board,
-// Faders, Player and Live on the right, Routes and Board in front.
+// DefaultLayout is the layout a new show opens with: the Board, Routes,
+// Rig, Controllers, Patterns and Monitor on the left, the Stage over
+// the Faders, Player and Live on the right, the Board and Faders in
+// front. The Board has the larger half, as it is the page a show is
+// played from.
 func DefaultLayout() dock.Layout {
-	l := dock.NewLayout(true, TabRoutes, TabRig, TabMIDI, TabDraw, TabWatch, TabStage, TabBoard, TabFaders, TabPlayer, TabLive)
+	l := dock.NewLayout(true, TabBoard, TabRoutes, TabRig, TabMIDI, TabDraw, TabWatch, TabStage, TabFaders, TabPlayer, TabLive)
 	l.Move(TabStage, dock.Target{Side: dock.Right})
-	l.Move(TabBoard, dock.Target{At: TabStage, Side: dock.Bottom})
-	l.Move(TabFaders, dock.Target{At: TabBoard, Index: -1})
-	l.Move(TabPlayer, dock.Target{At: TabBoard, Index: -1})
-	l.Move(TabLive, dock.Target{At: TabBoard, Index: -1})
+	l.Move(TabFaders, dock.Target{At: TabStage, Side: dock.Bottom})
+	l.Move(TabPlayer, dock.Target{At: TabFaders, Index: -1})
+	l.Move(TabLive, dock.Target{At: TabFaders, Index: -1})
+	l.Show(TabFaders)
 	l.Show(TabBoard)
-	l.Show(TabRoutes)
-	// The Stage takes less of the right than the Board, whose faders
-	// want the height.
-	if g := l.GroupOf(TabStage); g != nil {
+	if g := l.GroupOf(TabBoard); g != nil {
 		if split := l.Parent(g.ID); split != nil {
-			l.SetShare(split.ID, 0.4)
+			l.SetShare(split.ID, 0.58)
 		}
 	}
 	return l

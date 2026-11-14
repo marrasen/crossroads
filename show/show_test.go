@@ -97,3 +97,65 @@ func TestMendPutsEveryTabSomewhere(t *testing.T) {
 		t.Error("the Player tab is nowhere")
 	}
 }
+
+// TestABoardsScenesComeBackAsTheyWereSaved, and Mend keeps one scene a
+// pad, on the pads there are, of the lights the rig has.
+func TestABoardsScenesComeBackAsTheyWereSaved(t *testing.T) {
+	s := Start()
+	dome := s.Rig.Lights[0].ID
+	var b *Module
+	for i := range s.Modules {
+		if s.Modules[i].Kind == Board {
+			b = &s.Modules[i]
+		}
+	}
+	b.SceneFade = 2.5
+	b.SetScene(Scene{Pad: 9, Name: "Blue", Values: map[string]map[int]byte{dome: {3: 255, 7: 0}}})
+	b.SetScene(Scene{Pad: 1, Name: "Red", Values: map[string]map[int]byte{dome: {1: 200}}})
+	path := filepath.Join(t.TempDir(), "Gig.crossroads")
+	if err := s.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	back, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back.Modules, s.Modules) {
+		t.Fatalf("the scenes came back as %+v", back.Module(b.ID).Scenes)
+	}
+	if got := back.Module(b.ID).Scenes; got[0].Name != "Red" || got[1].Name != "Blue" {
+		t.Errorf("the scenes are not in their pads' order: %+v", got)
+	}
+	m := back.Module(b.ID)
+	m.Scenes = append(m.Scenes, Scene{Pad: 1, Name: "Again"}, Scene{Pad: Pads, Name: "Off the pads"},
+		Scene{Pad: 0, Name: "Gone", Values: map[string]map[int]byte{"nowhere": {1: 1}, dome: {2: 2}}})
+	back.Mend()
+	got := back.Module(b.ID).Scenes
+	if len(got) != 3 || got[0].Name != "Gone" || got[1].Name != "Red" || len(got[0].Values) != 1 {
+		t.Errorf("mended, the scenes are %+v", got)
+	}
+}
+
+// TestASceneWhoseLastLightIsRemovedLeavesItsPad: a scene holding
+// nothing is no scene.
+func TestASceneWhoseLastLightIsRemovedLeavesItsPad(t *testing.T) {
+	s := Start()
+	dome := s.Rig.Lights[0].ID
+	var b *Module
+	for i := range s.Modules {
+		if s.Modules[i].Kind == Board {
+			b = &s.Modules[i]
+		}
+	}
+	b.SetScene(Scene{Pad: 3, Name: "Red", Values: map[string]map[int]byte{dome: {1: 255}}})
+	before := s.Clone()
+	s.RemoveLight(dome)
+	if b.Scene(3) != nil {
+		t.Errorf("its only light removed, pad 3 still has %+v", *b.Scene(3))
+	}
+	for _, m := range before.Modules {
+		if m.Kind == Board && (m.Scene(3) == nil || len(m.Scene(3).Values) != 1) {
+			t.Error("removing the light changed the show it was cloned from")
+		}
+	}
+}
