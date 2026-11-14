@@ -65,9 +65,12 @@ type desk struct {
 	held   map[string]bool
 	fired  map[string]bool
 	sent   map[string]int
-	// standard says a knob was heard in Standard mode since the switch
-	// to Mackie Control mode was last sent.
+	// standard says a knob was heard in Standard mode, and nothing in
+	// Mackie Control mode since.
 	standard bool
+	// switched says the switch to Mackie Control mode went out to the
+	// port as it stands open, for the layout as it is.
+	switched bool
 	learn    bool
 	last     string
 	events   []midi.Event
@@ -122,11 +125,24 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 	}
 	if fresh {
 		clear(d.sent)
-		if l.Mackie && out != nil {
-			// The switch to Mackie Control mode, before every light.
-			d.standard = false
-			for _, msg := range controller.MackieHello() {
-				_ = out.Send(time.Time{}, msg)
+		d.switched = false
+	}
+	if !l.Mackie {
+		d.switched, d.standard = false, false
+	}
+	// justSwitched says the switch goes out this tick: what was heard
+	// before it says nothing of the mode the controller is in now.
+	justSwitched := l.Mackie && out != nil && !d.switched
+	if justSwitched {
+		// The switch to Mackie Control mode, before every light: as the
+		// port opens, and where it was open already, as for a layout
+		// just picked or a port another module holds.
+		clear(d.sent)
+		d.standard = false
+		d.switched = true
+		for _, msg := range controller.MackieHello() {
+			if out.Send(time.Time{}, msg) != nil {
+				d.switched = false
 			}
 		}
 	}
@@ -149,10 +165,16 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 		}
 		d.last = ev.String()
 		e.note(now, m.Name+": "+d.last)
-		if l.Mackie && controller.IsStandard(kind, ch, number) {
-			d.standard = true
-		}
 		c := find(controls, kind, ch, number)
+		if l.Mackie {
+			switch {
+			case controller.IsStandard(kind, ch, number):
+				d.standard = !justSwitched
+			case c != nil:
+				// One of Mackie Control mode's own messages: it switched.
+				d.standard = false
+			}
+		}
 		if c == nil {
 			if d.learn && value > 0 {
 				id := fmt.Sprintf("c%d", len(m.Controls)+len(e.learnt)+1)
@@ -165,7 +187,10 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 		}
 		switch c.Kind {
 		case show.Knob:
-			d.values[c.ID] = min(max(d.values[c.ID]+float64(ticks(byte(value)))*knobStep, 0), 1)
+			// Kept on a whole step, so that steps up and then down end
+			// where they began.
+			v := d.values[c.ID] + float64(ticks(byte(value)))*knobStep
+			d.values[c.ID] = min(max(math.Round(v/knobStep)*knobStep, 0), 1)
 		case show.Slider:
 			at := float64(value) / 127
 			if was, ok := d.values[c.ID]; ok && !d.caught[c.ID] {

@@ -458,7 +458,7 @@ func (e *Engine) Set(s show.Show) {
 				e.desks[m.ID] = d
 			}
 			// Another device: its lights and its sliders start afresh.
-			d.device, d.standard = m.Device, false
+			d.device, d.standard, d.switched = m.Device, false, false
 			clear(d.sent)
 			clear(d.caught)
 		case show.MIDIOut:

@@ -496,3 +496,84 @@ func waitPorts(t *testing.T, e *Engine) {
 	}
 	t.Fatal("the MIDI ports never opened")
 }
+
+// TestALayoutPickedOnAnOpenPortIsSwitchedToMCMode: the switch goes out
+// as the X-Touch Mini's layout is picked for a controller whose port
+// stands open already, before its lights.
+func TestALayoutPickedOnAnOpenPortIsSwitchedToMCMode(t *testing.T) {
+	d := &fakeMIDI{}
+	var s show.Show
+	ctl := s.NewID("m")
+	s.Modules = []show.Module{{ID: ctl, Kind: show.Controller, Device: "X-TOUCH MINI"}}
+	e := New(nil)
+	e.MIDI = d
+	defer e.Close()
+	e.Set(s)
+	waitPorts(t, e)
+	e.Tick()
+	if sent := d.took(); len(sent) != 0 {
+		t.Fatalf("a controller with no controls was sent %v", sent)
+	}
+	s.Modules[0].Layout = controller.XTouchMiniID
+	e.Set(s)
+	e.Tick()
+	sent := d.took()
+	if len(sent) < 17 {
+		t.Fatalf("its layout picked, the X-Touch Mini was sent %v", sent)
+	}
+	for ch, m := range sent[:16] {
+		if !same(m, midi.Message{Status: byte(0xB0 + ch), Data1: 127, Data2: 1}) {
+			t.Fatalf("its layout picked, message %d sent is %v, not the switch", ch, m)
+		}
+	}
+	if !same(sent[16], midi.Control(0, 48, 32)) {
+		t.Errorf("after the switch came %v, not the first ring", sent[16])
+	}
+	e.Tick()
+	if sent := d.took(); len(sent) != 0 {
+		t.Errorf("switched once, it was sent %v again", sent)
+	}
+}
+
+// TestTheStandardModeWarningGoesAsMCModeIsHeardOrTheLayoutLeft: one of
+// Mackie Control mode's own messages says the controller switched, and
+// a controller of learned controls wants no mode.
+func TestTheStandardModeWarningGoesAsMCModeIsHeardOrTheLayoutLeft(t *testing.T) {
+	r := newMIDIRig(t)
+	r.tick()
+	r.d.play(midi.Control(10, 3, 64))
+	if !r.tick().Desks[r.ctl].Standard {
+		t.Fatal("a Standard mode knob heard, the X-Touch Mini does not say so")
+	}
+	r.d.play(midi.Control(0, 16, 1))
+	if r.tick().Desks[r.ctl].Standard {
+		t.Error("a Mackie Control knob heard, it still says it is in Standard mode")
+	}
+	r.d.play(midi.Control(10, 3, 64))
+	if !r.tick().Desks[r.ctl].Standard {
+		t.Fatal("a Standard mode knob heard again, the X-Touch Mini does not say so")
+	}
+	r.s.Modules[0].Layout = ""
+	r.e.Set(r.s)
+	if r.tick().Desks[r.ctl].Standard {
+		t.Error("its layout left, the controller still says it is in Standard mode")
+	}
+}
+
+// TestAKnobTurnedUpAndBackDownEndsDark: steps up and the same steps
+// down leave the value at 0 and the ring dark, not a hair above it.
+func TestAKnobTurnedUpAndBackDownEndsDark(t *testing.T) {
+	r := newMIDIRig(t)
+	r.tick()
+	r.d.took()
+	for _, v := range []int{1, 5, 70} {
+		r.d.play(midi.Control(0, 16, v))
+	}
+	if v := r.tick().Desks[r.ctl].Values["knob1"]; v != 0 {
+		t.Errorf("up six steps and down six, the knob stands at %v", v)
+	}
+	sent := r.d.took()
+	if len(sent) != 0 {
+		t.Errorf("the ring, dark before and after, was sent %v", sent)
+	}
+}
