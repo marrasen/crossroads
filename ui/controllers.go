@@ -149,6 +149,20 @@ func (l *cardList) paintRoutes(p *paint.Painter, f gunim.Frame, cd *card, m *sho
 	}
 }
 
+// deskSays is what a Controller's card says under its name: what its
+// port says and the last message heard, led by how to switch it to
+// Mackie Control mode where it is heard in Standard mode.
+func deskSays(d engine.Desk) string {
+	says := d.Says
+	if d.Last != "" {
+		says += " · last heard " + d.Last
+	}
+	if d.Standard {
+		says = "In Standard mode, it wants MC mode: hold MC while plugging it in · " + says
+	}
+	return says
+}
+
 // routeRowH is how tall a route's row is.
 const routeRowH = 40
 
@@ -505,11 +519,7 @@ func (l *cardList) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids gu
 		}
 		says := l.c.played.Says[id]
 		if m.Kind == show.Controller {
-			d := l.c.played.Desks[id]
-			says = d.Says
-			if d.Last != "" {
-				says += " · last heard " + d.Last
-			}
+			says = deskSays(l.c.played.Desks[id])
 		}
 		if says != "" {
 			s := face.Shape(says, 11)

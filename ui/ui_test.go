@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -375,6 +376,19 @@ func TestTheControllersTabShowsEachControllerAndLearns(t *testing.T) {
 	}
 	if !learn {
 		t.Error("the learn button asked to learn nothing")
+	}
+}
+
+// TestAControllerInStandardModeSaysHowToSwitchToMCMode: hold MC while
+// plugging it in, ahead of what its port says.
+func TestAControllerInStandardModeSaysHowToSwitchToMCMode(t *testing.T) {
+	d := engine.Desk{Says: "X-TOUCH MINI", Last: "Control ch 11 cc 3 64"}
+	if got := deskSays(d); got != "X-TOUCH MINI · last heard Control ch 11 cc 3 64" {
+		t.Errorf("in MC mode, the card says %q", got)
+	}
+	d.Standard = true
+	if got := deskSays(d); !strings.HasPrefix(got, "In Standard mode, it wants MC mode: hold MC while plugging it in · X-TOUCH MINI") {
+		t.Errorf("in Standard mode, the card says %q", got)
 	}
 }
 
