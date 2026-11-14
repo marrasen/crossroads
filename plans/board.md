@@ -68,8 +68,9 @@ Three sources, merged per channel:
 **The Board has the channels it sets.** What it plays on a channel wins
 over whatever else is wired into the Mixer, under the grand master and
 blackout. So a fader pulled down really goes down, and recording a
-scene never changes the stage. A scene fading in or out crosses from
-and to what plays under it. A channel the Board does not set shows what
+scene never changes the stage. A scene or a chase step fading in or out
+crosses to another scene of the Board's that holds the channel, or,
+where none does, to what plays under the Board. A channel the Board does not set shows what
 the other modules play, or the Mixer's home value.
 
 A fader's value is the channel's DMX value, 0 to 255, as on a hardware
@@ -150,7 +151,7 @@ The Board module, as above, and the Board tab:
   plays now: the faders over the scenes that are on. The scene is then
   on and the faders are let go, so the stage does not change. Recording
   onto a pad that has a scene replaces it. Record pressed again, or
-  Escape, gives up.
+  Escape, gives up. A chase that runs is stored as it plays, and stops.
 - **Playing.** A pad pressed turns its scene on, pressed again off. It
   fades in and out over the **scene fade** time, a fader from 0 to 10
   seconds.
@@ -168,7 +169,9 @@ A Look stays what it is, one level per role. Scenes are the Board's own.
 - **Running.** A button for each chase. One chase runs at a time;
   pressing the running one stops it.
 - **Speed.** A fader, 20 to 600 steps a minute. It needs no clock.
-  **Tap** sets it from the gap between taps, and puts a step on the tap.
+  **Tap** sets it from the gap between taps, and puts a step on the
+  tap: the chase takes its next step, unless it has just taken one by
+  itself. The speed is kept in the show once the tapping stops.
 - **Fade.** A fader, 0 to 1: how much of each step is spent fading to
   it, as the Chaser module's.
 - **Follow the beat.** A switch. On, the chase steps on each beat of

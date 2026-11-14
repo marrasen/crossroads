@@ -104,20 +104,17 @@ func (b *boardPage) showChases(s *show.Show, m *show.Module, u *gunim.UI) {
 	if !c.chaseFade.Held() {
 		c.chaseFade.SetValue(float32(min(max(m.Fade, 0), 1)), u)
 	}
-	if !c.speed.Held() {
-		speed := m.Speed
-		if speed <= 0 {
-			speed = show.HomeSpeed
-		}
-		c.speed.SetValue(float32(engine.ClampSpeed(speed)), u)
-	}
 	c.follow.SetChecked(m.FollowBeat, u)
 }
 
 // liveChases follows what the engine says of the chases: whether one
 // is being made.
-func (b *boardPage) liveChases(st *engine.BoardState) {
+func (b *boardPage) liveChases(st *engine.BoardState, u *gunim.UI) {
 	c := &b.chaseControls
+	// The speed as the chase runs at it: the show's, or one tapped.
+	if !c.speed.Held() && st.Speed > 0 && c.speed.Value() != float32(st.Speed) {
+		c.speed.SetValue(float32(st.Speed), u)
+	}
 	c.newChase.Label, c.newChase.Icon, c.newChase.Kind = "New chase", icon.ListPlus, widget.ButtonPlain
 	if st.Making {
 		c.newChase.Label, c.newChase.Icon, c.newChase.Kind = "Done", icon.Check, widget.ButtonPrimary
@@ -168,17 +165,24 @@ func (b *boardPage) layChases(y, full, cw float32, making bool, lay func(gunim.N
 	b.tempoY = y
 	// The speed's words stand left of its slider.
 	x := float32(boardSide + 96)
-	ss := lay(c.speed, gunim.Constraints{Max: geom.Sz(speedW, buttonH)})
-	b.placed[c.speed] = geom.Rc(x, y+(buttonH-ss.H)/2, ss.W, ss.H)
-	x += speedW + 12
-	ts := lay(c.tap, gunim.Constraints{Max: geom.Sz(tapW, buttonH), Min: geom.Sz(tapW, 0)})
-	b.placed[c.tap] = geom.Rc(x, y, ts.W, ts.H)
 	other := gunim.Node(c.listen)
 	if b.clocked {
 		other = c.follow
 	}
 	os := lay(other, gunim.Constraints{Max: geom.Sz(260, buttonH)})
 	b.placed[other] = geom.Rc(full-os.W, y+(buttonH-os.H)/2, os.W, os.H)
+	// The slider gives way in a narrow tab, so that Tap stands clear of
+	// what is at the right: the switch and, before it, the tempo.
+	right := full - os.W - 12
+	if b.clocked {
+		right -= tempoW + 12
+	}
+	sw := min(max(right-x-12-tapW, 48), speedW)
+	ss := lay(c.speed, gunim.Constraints{Max: geom.Sz(sw, buttonH)})
+	b.placed[c.speed] = geom.Rc(x, y+(buttonH-ss.H)/2, ss.W, ss.H)
+	x += sw + 12
+	ts := lay(c.tap, gunim.Constraints{Max: geom.Sz(tapW, buttonH), Min: geom.Sz(tapW, 0)})
+	b.placed[c.tap] = geom.Rc(x, y, ts.W, ts.H)
 	return y + buttonH + 8
 }
 

@@ -181,29 +181,49 @@ func (e *Engine) tapDown(module string) {
 		if gap > 0 {
 			speed = ClampSpeed(60 / gap)
 		}
-		if speed != b.speedOf(m) {
-			b.speed, b.handed = speed, false
-			e.made = append(e.made, Made{Module: m.ID, Speed: speed})
-			if e.changed != nil {
-				e.changed()
-			}
+		if was := b.speedOf(m); speed != was {
+			// Played at once, and handed to the application once the
+			// tapping has stopped. How far into its step the chase is, it
+			// is by the new speed: the time since its step is the same.
+			b.speed, b.queued = speed, false
+			b.into *= speed / was
 		}
 	}
-	if b.run == 0 {
-		return
-	}
 	c, ok := b.chase(m, b.run)
-	if !ok {
+	if !ok || b.heard {
+		// Nothing runs, or the beat it follows has its steps.
 		return
 	}
-	b.stepOn(m, c)
-	// The step falls on the tap: the next tick counts on from it, not
-	// from the tick before.
+	// The tap says where a step falls. Past the middle of its step, the
+	// chase moves on to the next; before it, it has just taken the step
+	// the tap means. Either way it counts on from the tap, not from the
+	// tick before.
+	stepped := b.into >= 0.5
+	if stepped {
+		b.stepOn(m, c)
+	}
 	var since float64
 	if !e.last.IsZero() {
 		since = min(max(now.Sub(e.last).Seconds(), 0), 0.25)
 	}
 	b.into = -since * b.speedOf(m) / 60
+	if stepped {
+		b.faded = b.into
+	}
+}
+
+// settleTap hands the speed tapped on Board m, b its state, to the
+// application, once the tapping has stopped: one change to the show
+// for a run of taps, not one a tap.
+func (e *Engine) settleTap(m *show.Module, b *board) {
+	if b.speed == 0 || b.queued || len(b.taps) == 0 || e.now().Sub(b.taps[len(b.taps)-1]) < chaseTapGap {
+		return
+	}
+	b.queued = true
+	e.made = append(e.made, Made{Module: m.ID, Speed: b.speed})
+	if e.changed != nil {
+		e.changed()
+	}
 }
 
 // Made returns the chases the Boards made and the speeds tapped since
@@ -220,7 +240,6 @@ func (e *Engine) Made() []Made {
 			continue
 		}
 		if d.Chase == nil {
-			b.handed = b.handed || b.speed == d.Speed
 			continue
 		}
 		for i := range b.chases {
@@ -264,18 +283,18 @@ func (b *board) speedOf(m *show.Module) float64 {
 // start runs chase c of Board m, at once at its first step it can play.
 func (b *board) start(m *show.Module, c show.Chase) {
 	b.run, b.last = c.ID, c.ID
-	b.at, b.from, b.into, b.heard = -1, -1, 0, false
+	b.into, b.heard = 0, false
+	b.fading, b.faded = false, 0
+	b.cur = chaseLook{}
 	b.at = b.next(m, c, -1)
 }
 
 // stepOn moves the chase c of Board m that runs on to its next step it
-// can play, fading from the one it was at.
+// can play, fading from what it plays now, whole or part way through a
+// fade.
 func (b *board) stepOn(m *show.Module, c show.Chase) {
 	next := b.next(m, c, b.at)
-	b.from = -1
-	if b.at >= 0 && b.at < len(c.Steps) && next >= 0 {
-		b.from = c.Steps[b.at]
-	}
+	b.was, b.fading, b.faded = b.cur, b.at >= 0 && next >= 0, 0
 	b.at = next
 }
 
@@ -303,8 +322,10 @@ func (e *Engine) keepChases(m *show.Module, b *board) {
 		c := m.Chase(k.chase.ID)
 		return c != nil && (k.handed || slices.Equal(c.Steps, k.chase.Steps))
 	})
-	if b.speed > 0 && (b.handed || m.Speed == b.speed) {
-		b.speed, b.handed = 0, false
+	if m.Speed != b.showSpeed {
+		// The show's speed changed, as its fader was moved or the
+		// application kept the speed tapped: the show's is played.
+		b.showSpeed, b.speed = m.Speed, 0
 	}
 	if _, ok := b.chase(m, b.run); !ok {
 		b.run = 0
@@ -324,19 +345,19 @@ func (e *Engine) keepChases(m *show.Module, b *board) {
 // chase follows the beat.
 //
 // From one step to the next it fades over the share of each step the
-// fade says: a channel the grand master dims that both set crosses from
-// one value to the other; one only the step before sets fades out to
-// what plays under it, and one only the next sets fades in from it. A
-// channel the master does not dim takes the next step's value at once.
+// fade says, from what it played as it took the step: a channel the
+// grand master dims that both set crosses from one value to the other;
+// one only the step before set fades out to what plays under it, and
+// one only the next sets fades in from it. A channel the master does
+// not dim takes the next step's value at once. The fade runs on from
+// where it is as the chase begins to follow a beat or leaves it.
 func (e *Engine) chaseOn(m *show.Module, b *board, cat fixtures.Catalog, dt float64, clock Count,
 	put func(slot int, v byte, level float64)) (following bool) {
 	following = m.FollowBeat && clock.BPM > 0
-	if b.run == 0 {
-		return following
-	}
+	e.settleTap(m, b)
 	c, ok := b.chase(m, b.run)
 	if !ok {
-		b.run = 0
+		b.run, b.heard = 0, false
 		return following
 	}
 	// A step gone from under it, as a scene deleted or the chase's last
@@ -347,60 +368,80 @@ func (e *Engine) chaseOn(m *show.Module, b *board, cat fixtures.Catalog, dt floa
 		b.at = b.next(m, c, b.at-1)
 	}
 	if following {
+		// How far the clock moved, in beats: by its own count, where it
+		// counted on, and by its tempo as the chase begins to follow it.
+		moved := dt * clock.BPM / 60
+		if d := clock.Beats - b.beats; b.heard && d >= 0 && d < 1 {
+			moved = d
+		}
 		n := int64(math.Floor(clock.Beats))
+		stepped := false
 		if b.heard && n != b.beat {
 			if clock.Sure {
 				b.stepOn(m, c)
+				stepped = true
 			} else {
 				// A break: the step holds, whole.
-				b.from = -1
+				b.fading = false
 			}
 		}
-		b.beat, b.heard = n, true
+		b.beat, b.beats, b.heard = n, clock.Beats, true
 		_, b.into = math.Modf(clock.Beats)
 		if b.into < 0 {
 			b.into++
 		}
+		if stepped {
+			b.faded = b.into
+		} else {
+			b.faded += moved
+		}
 	} else {
 		b.heard = false
-		b.into += dt * b.speedOf(m) / 60
+		moved := dt * b.speedOf(m) / 60
+		b.into += moved
 		if b.into >= 1 {
 			b.into -= math.Floor(b.into)
 			b.stepOn(m, c)
+			b.faded = b.into
+		} else {
+			b.faded += moved
 		}
 	}
 	if b.at < 0 {
+		b.cur = chaseLook{}
 		return following
 	}
 	t := 1.0
-	if share := min(m.Fade, 1); b.from >= 0 && share > 0 {
-		t = min(max(b.into/share, 0), 1)
+	if share := min(m.Fade, 1); b.fading && share > 0 {
+		t = min(max(b.faded/share, 0), 1)
 	}
-	// What each step sets, by slot, each value one up, so that 0 says it
+	if t >= 1 {
+		b.fading = false
+	}
+	// What the step sets, by slot, each value one up, so that 0 says it
 	// sets nothing there.
-	var from, to [dmx.Channels]uint16
+	var to [dmx.Channels]uint16
 	e.sceneSlots(m, b, cat, c.Steps[b.at], &to)
-	if t < 1 {
-		e.sceneSlots(m, b, cat, b.from, &from)
-	}
 	for i := range dmx.Channels {
-		a, z := from[i], to[i]
+		z := to[i]
+		was, wasLevel := float64(b.was.v[i]), float64(b.was.level[i])
+		var v byte
+		var level float64
 		switch {
-		case a == 0 && z == 0:
-		case !e.dims[i]:
+		case !b.fading || !e.dims[i]:
 			if z != 0 {
-				put(i, byte(z-1), 1)
+				v, level = byte(z-1), 1
 			}
-		case a != 0 && z != 0:
-			put(i, byte(math.Round(float64(a-1)+t*(float64(z)-float64(a)))), 1)
-		case a != 0:
-			if t < 1 {
-				put(i, byte(a-1), 1-t)
-			}
-		default:
-			if t > 0 {
-				put(i, byte(z-1), t)
-			}
+		case z != 0 && wasLevel > 0:
+			v, level = byte(math.Round(was+t*(float64(z-1)-was))), wasLevel+t*(1-wasLevel)
+		case z != 0:
+			v, level = byte(z-1), t
+		case wasLevel > 0:
+			v, level = b.was.v[i], wasLevel*(1-t)
+		}
+		b.cur.v[i], b.cur.level[i] = v, float32(level)
+		if level > 0 {
+			put(i, v, level)
 		}
 	}
 	return following

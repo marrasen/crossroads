@@ -49,6 +49,10 @@ type BoardState struct {
 	// the beat is on and the clock has a tempo.
 	Clock     Count
 	Following bool
+	// Speed is how many steps a minute its chase runs at with no beat
+	// to follow: the show's, or one tapped that the show does not hold
+	// yet.
+	Speed float64
 }
 
 // A Recorded is a scene a Board recorded, for the show to keep on
@@ -140,21 +144,37 @@ type board struct {
 	chases []keptChase
 	// run is the chase that runs, by ID, 0 for none, and last the chase
 	// last run. at is the step it is at, by its place in the chase's
-	// steps, -1 for none; from the pad of the step it fades from, -1 for
-	// none; and into how far it is into its step, in steps, below 0 just
-	// after a tap. beat is the beat its clock counted last, where heard
-	// says it counted one.
+	// steps, -1 for none, and into how far it is into its step, in
+	// steps, below 0 just after a tap.
 	run, last int
-	at, from  int
+	at        int
 	into      float64
-	beat      int64
-	heard     bool
-	// taps are when the chase was last tapped, the latest last; speed a
-	// speed tapped that the show does not hold yet, 0 for none, and
-	// handed says the application has it.
-	taps   []time.Time
-	speed  float64
-	handed bool
+	// fading says the chase fades to its step, and faded how far it is
+	// into that, in steps. was is what it played as it took the step,
+	// which it fades from, and cur what it plays this tick.
+	fading   bool
+	faded    float64
+	was, cur chaseLook
+	// beat is the beat the clock it follows counted last and beats where
+	// that clock stood, where heard says it follows one.
+	beat  int64
+	beats float64
+	heard bool
+	// taps are when the chase was last tapped, the latest last. speed is
+	// a speed tapped that the show does not hold yet, 0 for none; queued
+	// says the application was handed it; and showSpeed is the show's
+	// speed as last seen, by which a change to it is known.
+	taps      []time.Time
+	speed     float64
+	queued    bool
+	showSpeed float64
+}
+
+// A chaseLook is what a chase plays: for each slot, from 0, a value
+// and the level it plays it at, 0 where it plays nothing.
+type chaseLook struct {
+	v     [dmx.Channels]byte
+	level [dmx.Channels]float32
 }
 
 // played is one channel of a scene that plays: its universe slot, from
@@ -346,9 +366,36 @@ func (e *Engine) record(m *show.Module, b *board, pad int) {
 			put(c, v)
 		}
 	})
+	// The chase that runs, as it plays now: the scene has it, and the
+	// chase stops, so that the stage plays on as it was.
+	if c, ok := b.chase(m, b.run); ok {
+		for _, step := range c.Steps {
+			sc, ok := b.scene(m, step)
+			if !ok {
+				continue
+			}
+			for id, chans := range sc.Values {
+				for off := range chans {
+					ch := Channel{Light: id, Offset: off}
+					slot, ok := e.slotOf(cat, ch)
+					if _, held := b.held[ch]; !ok || held || b.cur.level[slot-1] <= 0 {
+						continue
+					}
+					v := e.atLevel(slot, b.cur.v[slot-1], float64(b.cur.level[slot-1]))
+					if h, ok := heldAt[slot]; ok {
+						v = h
+					}
+					if was, ok := values[id][off]; !ok || v > was {
+						put(ch, v)
+					}
+				}
+			}
+		}
+	}
 	if len(values) == 0 {
 		return
 	}
+	b.run = 0
 	sc := show.Scene{Pad: pad, Name: "Scene " + strconv.Itoa(pad+1), Values: values}
 	if was, ok := b.scene(m, pad); ok {
 		sc.Name = was.Name
@@ -553,7 +600,7 @@ func (e *Engine) playBoard(m *show.Module, cat fixtures.Catalog, dt float64, liv
 	}
 	e.values[portKey{m.ID, "out"}] = l
 	st := BoardState{Picked: b.picked, Held: b.held, Record: b.record, Making: b.making, Steps: b.steps,
-		Chase: b.run, Step: -1, Last: b.last, Clock: clock, Following: following}
+		Chase: b.run, Step: -1, Last: b.last, Clock: clock, Following: following, Speed: b.speedOf(m)}
 	if b.run != 0 {
 		st.Step, st.Into = b.at, min(max(b.into, 0), 1)
 	}
@@ -589,25 +636,32 @@ func (e *Engine) boardsInto(mixer string, f func(id string, b *board)) {
 // boardsOver puts what the Boards wired into Mixer module mixer play
 // over u, the universe it merged from its other inputs: a Board has
 // the channels it sets, whatever else is wired into the mixer, under
-// the grand master. A scene fading crosses from what plays under it, on
-// the channels the grand master dims; the higher has a channel two
-// scenes set; and a fader held has its channel over the scenes.
+// the grand master. Of what a Board plays on a channel the grand master
+// dims, each at its level, the most shows, and what plays under shows
+// through by as much as the Board's fullest level there leaves: so a
+// scene fading crosses to another of the Board's that holds the channel,
+// or to what the mixer merged where none does. A fader held has its
+// channel over all of that.
 func (e *Engine) boardsOver(mixer string, master float64, u *dmx.Universe) {
 	e.boardsInto(mixer, func(_ string, b *board) {
-		under := *u
-		var set [dmx.Channels]bool
+		var cover, top [dmx.Channels]float32
 		for _, p := range b.plays {
-			v := float64(p.v)
-			if e.dims[p.slot] {
-				if master < 1 {
-					v *= master
-				}
-				was := float64(under[p.slot])
-				v = was + p.level*(v-was)
+			l := float32(p.level)
+			if !e.dims[p.slot] {
+				l = 1
 			}
-			if out := dmx.Clamp8f(v); !set[p.slot] || out > u[p.slot] {
-				u[p.slot], set[p.slot] = out, true
+			cover[p.slot] = max(cover[p.slot], l)
+			top[p.slot] = max(top[p.slot], float32(p.v)*l)
+		}
+		for i, c := range &cover {
+			if c <= 0 {
+				continue
 			}
+			v := float64(top[i])
+			if e.dims[i] && master < 1 {
+				v *= master
+			}
+			u[i] = dmx.Clamp8f(float64(u[i])*(1-float64(c)) + v)
 		}
 		for i, v := range &b.over {
 			if v == 0 {

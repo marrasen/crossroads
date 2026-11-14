@@ -713,6 +713,13 @@ func TestTheChasesSettingsAreKeptWithinBounds(t *testing.T) {
 	}
 	now = now.Add(400 * time.Millisecond)
 	a.Handle(0, TapChase{Module: b})
+	if a.st.Unsaved {
+		t.Fatal("a tap changed the show while the tapping may go on")
+	}
+	// The tapping stopped: the speed is kept, once.
+	now = now.Add(4 * time.Second)
+	a.eng.Tick()
+	a.recorded()
 	if m := named(t, a, "Board"); m.Speed != 150 || !a.st.Unsaved {
 		t.Errorf("taps 0.4 s apart keep a speed of %v", m.Speed)
 	}

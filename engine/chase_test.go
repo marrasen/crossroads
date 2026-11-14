@@ -236,11 +236,12 @@ func TestOneChaseRunsAtATime(t *testing.T) {
 	}
 }
 
-// TestTapsSetTheSpeedAndStepTheChase: each tap moves the chase on at
-// once; taps half a second apart make 120 steps a minute, which the
-// board runs at before the show holds it, and through a show set
-// without it; a tap long after counts afresh.
-func TestTapsSetTheSpeedAndStepTheChase(t *testing.T) {
+// TestTapsSetTheSpeedAndPutAStepOnTheTap: a tap says where a step
+// falls. Just after the chase took a step by itself, it takes no other;
+// two taps set the speed, played at once, and the second, a step's
+// length after the first by that speed, takes a step. The speed is
+// handed over once, when the tapping has stopped.
+func TestTapsSetTheSpeedAndPutAStepOnTheTap(t *testing.T) {
 	r := newBoardRig(t)
 	r.s.Module(r.board).Speed = 30
 	for pad := range 3 {
@@ -251,31 +252,43 @@ func TestTapsSetTheSpeedAndStepTheChase(t *testing.T) {
 	r.e.Now = func() time.Time { return now }
 	r.e.Tick()
 	r.e.PressChase(r.board, 1)
-	tap := func(after time.Duration) int {
-		now = now.Add(after)
-		r.e.TapChase(r.board)
-		return r.shows().Step
+	run := func(d time.Duration) BoardState {
+		st := r.shows()
+		for ; d > 0; d -= 25 * time.Millisecond {
+			now = now.Add(25 * time.Millisecond)
+			st = r.shows()
+		}
+		return st
 	}
-	if at := tap(0); at != 1 {
-		t.Fatalf("a first tap moved the chase to step %d", at)
+	run(100 * time.Millisecond)
+	r.e.TapChase(r.board)
+	if st := run(0); st.Step != 0 || st.Speed != 30 {
+		t.Fatalf("a first tap, just after the chase began, leaves it at step %d and %v a minute", st.Step, st.Speed)
+	}
+	run(500 * time.Millisecond)
+	r.e.TapChase(r.board)
+	if st := run(0); st.Step != 1 || st.Speed != 120 {
+		t.Fatalf("a second tap half a second on leaves it at step %d and %v a minute", st.Step, st.Speed)
+	}
+	// In time with the chase, which steps by itself about now: the tap
+	// takes the step, or leaves the one just taken, and never two.
+	run(500 * time.Millisecond)
+	r.e.TapChase(r.board)
+	if st := run(0); st.Step != 2 {
+		t.Fatalf("a tap in time with the chase leaves it at step %d", st.Step)
+	}
+	// A show set meanwhile leaves the speed tapped playing.
+	r.e.Set(r.s)
+	if st := run(250 * time.Millisecond); st.Step != 2 || st.Speed != 120 {
+		t.Errorf("a quarter of a second on, the chase is at step %d and %v a minute", st.Step, st.Speed)
+	}
+	if st := run(300 * time.Millisecond); st.Step != 0 {
+		t.Errorf("a little over half a second on, the chase is at step %d, not round to the first", st.Step)
 	}
 	if got := r.e.Made(); len(got) != 0 {
-		t.Fatalf("a first tap made %+v", got)
+		t.Fatalf("while the tapping may go on, the engine hands over %+v", got)
 	}
-	if at := tap(500 * time.Millisecond); at != 2 {
-		t.Errorf("a second tap moved the chase to step %d", at)
-	}
-	// A show set before the application has the speed: at 120 a minute
-	// still, the next step is half a second on.
-	r.e.Set(r.s)
-	now = now.Add(250 * time.Millisecond)
-	if st := r.shows(); st.Step != 2 {
-		t.Errorf("a quarter of a second on, the chase is at %d", st.Step)
-	}
-	now = now.Add(250 * time.Millisecond)
-	if st := r.shows(); st.Step != 0 {
-		t.Errorf("half a second on, the chase is at %d, not round to the first", st.Step)
-	}
+	run(3 * time.Second)
 	got := r.e.Made()
 	if len(got) != 1 || got[0].Module != r.board || got[0].Chase != nil || got[0].Speed != 120 {
 		t.Fatalf("taps half a second apart made %+v", got)
@@ -285,15 +298,29 @@ func TestTapsSetTheSpeedAndStepTheChase(t *testing.T) {
 	if r.e.boards[r.board].speed != 0 {
 		t.Error("the board still keeps the speed the show holds")
 	}
-	tap(5 * time.Second)
-	tap(time.Second)
-	if got := r.e.Made(); len(got) != 1 || got[0].Speed != 60 {
-		t.Errorf("taps a second apart, after a long gap, made %+v", got)
-	}
-	tap(5 * time.Second)
-	tap(10 * time.Millisecond)
+	// Taps too fast set the fastest speed there is.
+	run(time.Second)
+	r.e.TapChase(r.board)
+	now = now.Add(10 * time.Millisecond)
+	r.e.TapChase(r.board)
+	run(4 * time.Second)
 	if got := r.e.Made(); len(got) != 1 || got[0].Speed != show.MaxSpeed {
 		t.Errorf("taps too fast made %+v", got)
+	}
+	// The speed's fader moved has the last word over one tapped.
+	r.e.TapChase(r.board)
+	now = now.Add(time.Second)
+	r.e.TapChase(r.board)
+	if st := run(0); st.Speed != 60 {
+		t.Fatalf("taps a second apart play %v a minute", st.Speed)
+	}
+	r.s.Module(r.board).Speed = 200
+	r.e.Set(r.s)
+	if st := run(4 * time.Second); st.Speed != 200 {
+		t.Errorf("the fader moved to 200, the chase plays %v a minute", st.Speed)
+	}
+	if got := r.e.Made(); len(got) != 0 {
+		t.Errorf("the fader moved, the engine still hands over %+v", got)
 	}
 }
 
@@ -440,4 +467,150 @@ func TestForgetLetsGoOfTheChases(t *testing.T) {
 	if b := r.e.boards[r.board]; len(b.taps) != 0 || b.speed != 0 || len(b.chases) != 0 {
 		t.Errorf("forgotten, the board keeps taps %v, speed %v and %d chases", b.taps, b.speed, len(b.chases))
 	}
+}
+
+// ticked has r's engine tell the time from now, which run moves on a
+// fortieth of a second at a time, calling each with what plays.
+func (r *boardRig) ticked() (run func(d time.Duration, each func(Live))) {
+	now := time.Unix(1000, 0)
+	r.e.Now = func() time.Time { return now }
+	r.e.Tick()
+	return func(d time.Duration, each func(Live)) {
+		for ; d > 0; d -= 25 * time.Millisecond {
+			now = now.Add(25 * time.Millisecond)
+			if live := r.e.Tick(); each != nil {
+				each(live)
+			}
+		}
+	}
+}
+
+// TestAChasesChannelFadesToASceneOfTheBoardsNotToWhatPlaysUnder: the
+// dome's red plays at 0.8 from its Lights module, a scene on holds it
+// at 50, and a chase's first step at 100, its second not at all. Red
+// goes between 100 and 50, never to what the Lights module plays.
+func TestAChasesChannelFadesToASceneOfTheBoardsNotToWhatPlaysUnder(t *testing.T) {
+	r := newBoardRig(t)
+	m := r.s.Module(r.board)
+	m.Speed, m.Fade = 60, 0.5
+	r.scene(0, map[int]byte{1: 50})
+	r.scene(1, map[int]byte{1: 100})
+	r.scene(2, map[int]byte{2: 100})
+	r.chase(1, 1, 2)
+	run := r.ticked()
+	r.e.PressPad(r.board, 0)
+	r.e.PressChase(r.board, 1)
+	n := 0
+	run(4*time.Second, func(live Live) {
+		n++
+		if red := live.Stage[0]; red < 50 || red > 100 {
+			t.Fatalf("tick %d: red plays %d, outside what the board's scene and chase hold", n, red)
+		}
+	})
+}
+
+// TestAStepTakenMidFadeFadesFromWhatPlayed: a tap half way through a
+// fade from green 0 to 250 fades on from where green was, not from 250.
+func TestAStepTakenMidFadeFadesFromWhatPlayed(t *testing.T) {
+	r := newBoardRig(t)
+	m := r.s.Module(r.board)
+	m.Speed, m.Fade = 60, 1
+	r.scene(0, map[int]byte{2: 0})
+	r.scene(1, map[int]byte{2: 250})
+	r.chase(1, 0, 1, 0)
+	run := r.ticked()
+	r.e.PressChase(r.board, 1)
+	var green byte
+	see := func(live Live) { green = live.Stage[1] }
+	run(1500*time.Millisecond, see)
+	if green < 100 || green > 150 {
+		t.Fatalf("half way through the fade, green plays %d", green)
+	}
+	// Past the middle of the step, the tap takes the next.
+	run(100*time.Millisecond, see)
+	was := green
+	r.e.TapChase(r.board)
+	n := 0
+	run(time.Second, func(live Live) {
+		n++
+		got := live.Stage[1]
+		if got > was {
+			t.Fatalf("tick %d after the tap: green rose from %d to %d", n, was, got)
+		}
+		if int(was)-int(got) > 12 {
+			t.Fatalf("tick %d after the tap: green fell from %d to %d in one tick", n, was, got)
+		}
+		was = got
+	})
+	if was > 10 {
+		t.Errorf("the fade all but done, green plays %d", was)
+	}
+}
+
+// TestRecordingOverARunningChaseKeepsTheStageAndStopsTheChase: a fader
+// holds green under what the chase plays; recorded, the scene has what
+// the board played, the chase with it, and the chase stops, so the
+// stage plays on as it was.
+func TestRecordingOverARunningChaseKeepsTheStageAndStopsTheChase(t *testing.T) {
+	r := newBoardRig(t)
+	// Green, white and the strobe.
+	r.scene(0, map[int]byte{2: 200, 4: 90, 7: 40})
+	r.chase(1, 0)
+	run := r.ticked()
+	r.e.PressChase(r.board, 1)
+	r.e.Hold(r.board, []Channel{{Light: r.dome, Offset: 2}}, 30)
+	var before Live
+	run(100*time.Millisecond, func(live Live) { before = live })
+	if before.Stage[1] != 30 || before.Stage[3] != 90 || before.Stage[6] != 40 {
+		t.Fatalf("the chase under a fader plays green %d, white %d, strobe %d", before.Stage[1], before.Stage[3], before.Stage[6])
+	}
+	r.e.PressRecord(r.board)
+	r.e.PressPad(r.board, 5)
+	n := 0
+	run(500*time.Millisecond, func(live Live) {
+		n++
+		if live.Stage != before.Stage {
+			t.Fatalf("tick %d after recording: green %d, white %d, strobe %d", n, live.Stage[1], live.Stage[3], live.Stage[6])
+		}
+		if st := live.Boards[r.board]; st.Chase != 0 || st.Last != 1 || !slices.Equal(st.On, []int{5}) {
+			t.Fatalf("tick %d after recording: the board shows chase %d, last %d, on %v", n, st.Chase, st.Last, st.On)
+		}
+	})
+	got := r.e.Recorded()
+	if len(got) != 1 || len(got[0].Scene.Values[r.dome]) != 3 || got[0].Scene.Values[r.dome][2] != 30 {
+		t.Errorf("recorded %+v", got)
+	}
+}
+
+// TestAChaseBeginningToFollowABeatFadesOn: its fade done, a chase told
+// to follow the beat part way through its step plays on whole, and does
+// not start the fade again.
+func TestAChaseBeginningToFollowABeatFadesOn(t *testing.T) {
+	r := newBoardRig(t)
+	tempo := show.Module{ID: r.s.NewID("m"), Kind: show.Tempo, Name: "Tempo", BPM: 60, Manual: true, At: geom.Pt(0, 0)}
+	r.s.Modules = append(r.s.Modules, tempo)
+	r.s.Wires = append(r.s.Wires, show.Wire{ID: r.s.NewID("w"), From: show.End{Module: tempo.ID, Port: "out"}, To: show.End{Module: r.board, Port: "clock"}})
+	m := r.s.Module(r.board)
+	m.Speed, m.Fade = 60, 0.5
+	r.scene(0, map[int]byte{2: 50})
+	r.scene(1, map[int]byte{2: 250})
+	r.chase(1, 0, 1)
+	run := r.ticked()
+	r.e.PressChase(r.board, 1)
+	var green byte
+	see := func(live Live) { green = live.Stage[1] }
+	// Into the second step, its fade done.
+	run(1800*time.Millisecond, see)
+	if green != 250 {
+		t.Fatalf("its fade done, green plays %d", green)
+	}
+	r.s.Module(r.board).FollowBeat = true
+	r.e.Set(r.s)
+	n := 0
+	run(150*time.Millisecond, func(live Live) {
+		n++
+		if st := live.Boards[r.board]; !st.Following || (st.Step == 1 && live.Stage[1] != 250) {
+			t.Fatalf("tick %d of following: following %v, step %d, green %d", n, st.Following, st.Step, live.Stage[1])
+		}
+	})
 }

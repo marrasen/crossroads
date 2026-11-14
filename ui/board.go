@@ -329,7 +329,7 @@ func (b *boardPage) live(l engine.Live, u *gunim.UI) {
 	if st.Record {
 		b.record.Kind = widget.ButtonDanger
 	}
-	b.liveChases(&st)
+	b.liveChases(&st, u)
 	u.Invalidate()
 }
 
