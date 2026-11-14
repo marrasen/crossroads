@@ -580,3 +580,28 @@ func TestScenesComeBackWithTheShow(t *testing.T) {
 		t.Errorf("opened again, %v is on and green plays %d", live.Boards[b].On, live.Stage[1])
 	}
 }
+
+// TestASceneRenamedToItsNameAndAFadeSetToItsTimeChangeNothing: neither
+// marks the show as changed, and a fade is a Board's alone.
+func TestASceneRenamedToItsNameAndAFadeSetToItsTimeChangeNothing(t *testing.T) {
+	s := show.Start()
+	for i := range s.Modules {
+		if s.Modules[i].Kind == show.Board {
+			s.Modules[i].SetScene(show.Scene{Pad: 0, Name: "Red", Values: map[string]map[int]byte{s.Rig.Lights[0].ID: {1: 255}}})
+			s.Modules[i].SceneFade = 2
+		}
+	}
+	a := NewApp(s, "", nil)
+	b, mixer := named(t, a, "Board").ID, named(t, a, "Mixer").ID
+	a.Handle(0, RenameScene{Module: b, Pad: 0, Name: " Red "})
+	a.Handle(0, SetSceneFade{Module: b, Seconds: 2})
+	a.Handle(0, SetSceneFade{Module: mixer, Seconds: 5})
+	a.Handle(0, SetSceneFade{Module: "nothing", Seconds: 5})
+	if a.st.Unsaved || named(t, a, "Mixer").SceneFade != 0 {
+		t.Errorf("the show is changed: %v, and the mixer fades %v", a.st.Unsaved, named(t, a, "Mixer").SceneFade)
+	}
+	a.Handle(0, RenameScene{Module: b, Pad: 0, Name: "Deep red"})
+	if !a.st.Unsaved || named(t, a, "Board").Scene(0).Name != "Deep red" {
+		t.Error("a scene renamed is not kept")
+	}
+}

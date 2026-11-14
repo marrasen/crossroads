@@ -560,11 +560,13 @@ func (s *Show) RemoveLight(id string) {
 }
 
 // keepSceneLights takes the lights the rig does not have out of every
-// scene.
+// scene, and a scene left holding nothing off its pad.
 func (s *Show) keepSceneLights() {
 	for i := range s.Modules {
-		for j := range s.Modules[i].Scenes {
-			c := &s.Modules[i].Scenes[j]
+		m := &s.Modules[i]
+		empty := false
+		for j := range m.Scenes {
+			c := &m.Scenes[j]
 			for id := range c.Values {
 				if s.Light(id) == nil {
 					// A new map, as the show this one was cloned from may share it.
@@ -573,6 +575,11 @@ func (s *Show) keepSceneLights() {
 					break
 				}
 			}
+			empty = empty || len(c.Values) == 0
+		}
+		if empty {
+			// A new slice, for the same reason.
+			m.Scenes = slices.DeleteFunc(slices.Clone(m.Scenes), func(c Scene) bool { return len(c.Values) == 0 })
 		}
 	}
 }

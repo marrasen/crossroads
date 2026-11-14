@@ -520,3 +520,91 @@ func TestForgetLetsGoOfTheScenesOn(t *testing.T) {
 		t.Errorf("forgotten, the engine still hands over %+v", got)
 	}
 }
+
+// TestRecordingAFaderHeldUnderAnotherModulesLightLeavesTheStage: the
+// dome's red plays at 0.8 from its Lights module, and the Board holds
+// it at 10. Recorded, the scene has the channel as the fader had, so
+// the stage plays on as it was, and the Monitor names the Board.
+func TestRecordingAFaderHeldUnderAnotherModulesLightLeavesTheStage(t *testing.T) {
+	r := newBoardRig(t)
+	r.e.Hold(r.board, []Channel{{Light: r.dome, Offset: 1}}, 10)
+	before := r.e.Tick().Stage
+	if before[0] != 10 {
+		t.Fatalf("red held at 10 plays %d", before[0])
+	}
+	r.e.PressRecord(r.board)
+	r.e.PressPad(r.board, 0)
+	for i := range 5 {
+		live := r.e.Tick()
+		if live.Stage != before {
+			t.Fatalf("recorded, tick %d: red plays %d, not %d", i, live.Stage[0], before[0])
+		}
+		if live.Owners[1] != r.board {
+			t.Fatalf("recorded, tick %d: red is owned by %q", i, live.Owners[1])
+		}
+	}
+}
+
+// TestASceneFadingCrossesFromWhatPlaysUnderIt: over the dome's red at
+// 0.8 from its Lights module, a scene with red at 10 fades down from
+// what played to 10, and back up to it as it fades out, never dipping
+// to dark.
+func TestASceneFadingCrossesFromWhatPlaysUnderIt(t *testing.T) {
+	r := newBoardRig(t)
+	r.s.Module(r.board).SceneFade = 1
+	r.scene(0, map[int]byte{1: 10})
+	step := r.clocked()
+	under := r.e.Tick().Stage[0]
+	if under <= 100 {
+		t.Fatalf("the dome's red plays %d under the board", under)
+	}
+	r.e.PressPad(r.board, 0)
+	was := under
+	for i := range 4 {
+		got := step().Stage[0]
+		if got >= was || got < 10 {
+			t.Fatalf("fading in, step %d: red went from %d to %d", i, was, got)
+		}
+		was = got
+	}
+	if was != 10 {
+		t.Fatalf("faded in, red plays %d, not 10", was)
+	}
+	r.e.PressPad(r.board, 0)
+	for i := range 4 {
+		got := step().Stage[0]
+		if got <= was || got > under {
+			t.Fatalf("fading out, step %d: red went from %d to %d", i, was, got)
+		}
+		was = got
+	}
+	if was != under {
+		t.Errorf("faded out, red plays %d, not %d", was, under)
+	}
+}
+
+// TestASceneHandedOverPlaysOnThroughAShowSetWithoutIt: handed to the
+// application, a scene recorded still plays through a show set that has
+// none on its pad, and goes from the board's keeping once one has.
+func TestASceneHandedOverPlaysOnThroughAShowSetWithoutIt(t *testing.T) {
+	r := newBoardRig(t)
+	r.e.Hold(r.board, []Channel{{Light: r.dome, Offset: 2}}, 150)
+	r.e.Tick()
+	r.e.PressRecord(r.board)
+	r.e.PressPad(r.board, 5)
+	got := r.e.Recorded()
+	if len(got) != 1 {
+		t.Fatalf("recorded %+v", got)
+	}
+	r.e.Set(r.s)
+	for i := range 3 {
+		if live := r.e.Tick(); live.Stage[1] != 150 || !slices.Equal(live.Boards[r.board].On, []int{5}) {
+			t.Fatalf("a show set without the scene, tick %d: green plays %d and %v is on", i, live.Stage[1], live.Boards[r.board].On)
+		}
+	}
+	r.s.Module(r.board).SetScene(got[0].Scene)
+	r.e.Set(r.s)
+	if live := r.e.Tick(); live.Stage[1] != 150 || len(r.e.boards[r.board].kept) != 0 {
+		t.Errorf("held by the show, green plays %d and the board keeps %d scenes", live.Stage[1], len(r.e.boards[r.board].kept))
+	}
+}

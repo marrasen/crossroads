@@ -104,7 +104,10 @@ type board struct {
 	// over is what the faders hold, by universe slot from 0, each value
 	// one up, so that 0 says the slot is not held; any says one is.
 	over [dmx.Channels]uint16
-	any  bool
+	// plays is what the scenes that play set this tick, a slot and a
+	// scene at a time. any says a fader holds a slot or a scene plays.
+	plays []played
+	any   bool
 	// record says Record waits for a pad. fades are the scenes that
 	// play, by pad. kept are the scenes recorded that the show does not
 	// hold yet, by pad, which the board plays in place of the show's.
@@ -115,6 +118,14 @@ type board struct {
 
 // A fade is a scene of a Board as it plays: whether it is on, and how
 // far it has faded in, 0 to 1.
+// played is one channel of a scene that plays: its universe slot, from
+// 0, the value the scene holds for it, and the scene's level.
+type played struct {
+	slot  int
+	v     byte
+	level float64
+}
+
 type fade struct {
 	on    bool
 	level float64
@@ -275,10 +286,11 @@ func (e *Engine) record(m *show.Module, b *board, pad int) {
 			heldAt[slot] = max(heldAt[slot], v)
 		}
 	}
-	e.scenesPlay(m, b, cat, func(c Channel, slot int, v byte) {
+	e.scenesPlay(m, b, cat, func(c Channel, slot int, v byte, level float64) {
 		if _, held := b.held[c]; held {
 			return
 		}
+		v = e.atLevel(slot, v, level)
 		if h, ok := heldAt[slot]; ok {
 			v = h
 		}
@@ -350,11 +362,20 @@ func (e *Engine) slotOf(cat fixtures.Catalog, c Channel) (int, bool) {
 	return slot, ok && slot >= 1 && slot <= dmx.Channels
 }
 
+// atLevel is what a scene at level plays for value v at slot, from 1,
+// over a dark stage: a channel the grand master dims at the scene's
+// level, the others whole while it plays.
+func (e *Engine) atLevel(slot int, v byte, level float64) byte {
+	if e.dims[slot-1] {
+		return byte(math.Round(float64(v) * level))
+	}
+	return v
+}
+
 // scenesPlay calls f with each channel each scene of Board m that plays
-// sets, at its slot and the value it plays now: a channel the grand
-// master dims at the scene's level, the others whole while it plays.
-// Two scenes may call f for one channel.
-func (e *Engine) scenesPlay(m *show.Module, b *board, cat fixtures.Catalog, f func(c Channel, slot int, v byte)) {
+// sets: its slot, from 1, the value the scene holds for it, and the
+// scene's level. Two scenes may call f for one channel.
+func (e *Engine) scenesPlay(m *show.Module, b *board, cat fixtures.Catalog, f func(c Channel, slot int, v byte, level float64)) {
 	for pad, fd := range b.fades {
 		sc, ok := b.scene(m, pad)
 		if !ok {
@@ -367,10 +388,7 @@ func (e *Engine) scenesPlay(m *show.Module, b *board, cat fixtures.Catalog, f fu
 				if !ok {
 					continue
 				}
-				if e.dims[slot-1] {
-					v = byte(math.Round(float64(v) * fd.level))
-				}
-				f(c, slot, v)
+				f(c, slot, v, fd.level)
 			}
 		}
 	}
@@ -392,7 +410,13 @@ func (e *Engine) keepBoards(cat fixtures.Catalog) {
 			e.boards[m.ID] = &board{}
 			continue
 		}
-		maps.DeleteFunc(b.kept, func(_ int, k kept) bool { return k.handed })
+		// A scene recorded goes once the show holds it: the same scene,
+		// or, handed over, whatever the show then made of its pad. A
+		// show set meanwhile that has none on the pad leaves it playing.
+		maps.DeleteFunc(b.kept, func(pad int, k kept) bool {
+			sc := m.Scene(pad)
+			return sc != nil && (k.handed || sameValues(sc.Values, k.scene.Values))
+		})
 		if slices.ContainsFunc(b.picked, func(id string) bool { return e.s.Light(id) == nil }) {
 			b.picked = slices.DeleteFunc(slices.Clone(b.picked), func(id string) bool { return e.s.Light(id) == nil })
 		}
@@ -410,6 +434,11 @@ func (e *Engine) keepBoards(cat fixtures.Catalog) {
 		}
 	}
 	maps.DeleteFunc(e.boards, func(id string, _ *board) bool { return !keep[id] })
+}
+
+// sameValues reports whether two scenes hold the same values.
+func sameValues(a, b map[string]map[int]byte) bool {
+	return maps.EqualFunc(a, b, maps.Equal[map[int]byte, map[int]byte])
 }
 
 // playBoard runs Board module m, dt seconds on from the last tick: its
@@ -454,9 +483,12 @@ func (e *Engine) playBoard(m *show.Module, cat fixtures.Catalog, dt float64, liv
 	// The scenes, by slot, each value one up, so that 0 says no scene
 	// sets it.
 	var scenes [dmx.Channels]uint16
-	e.scenesPlay(m, b, cat, func(_ Channel, slot int, v byte) {
-		scenes[slot-1] = max(scenes[slot-1], uint16(v)+1)
+	b.plays = b.plays[:0]
+	e.scenesPlay(m, b, cat, func(_ Channel, slot int, v byte, level float64) {
+		b.plays = append(b.plays, played{slot: slot - 1, v: v, level: level})
+		scenes[slot-1] = max(scenes[slot-1], uint16(e.atLevel(slot, v, level))+1)
 	})
+	b.any = b.any || len(b.plays) > 0
 	for i, v := range &scenes {
 		if v != 0 && b.over[i] == 0 {
 			l.Set(i+1, byte(v-1))
@@ -478,7 +510,7 @@ func (e *Engine) playBoard(m *show.Module, cat fixtures.Catalog, dt float64, liv
 }
 
 // boardsInto calls f with each Board wired into Mixer module mixer
-// whose faders hold a channel.
+// that plays a scene or whose faders hold a channel.
 func (e *Engine) boardsInto(mixer string, f func(id string, b *board)) {
 	if len(e.boards) == 0 {
 		return
@@ -493,11 +525,29 @@ func (e *Engine) boardsInto(mixer string, f func(id string, b *board)) {
 	}
 }
 
-// fadersOver puts what the faders of the Boards wired into Mixer module
-// mixer hold over u, the universe it merged: a fader held plays what it
-// says, whatever else is wired into the mixer, under the grand master.
-func (e *Engine) fadersOver(mixer string, master float64, u *dmx.Universe) {
+// boardsOver puts what the Boards wired into Mixer module mixer play
+// over u, the universe it merged from its other inputs: a Board has
+// the channels it sets, whatever else is wired into the mixer, under
+// the grand master. A scene fading crosses from what plays under it, on
+// the channels the grand master dims; the higher has a channel two
+// scenes set; and a fader held has its channel over the scenes.
+func (e *Engine) boardsOver(mixer string, master float64, u *dmx.Universe) {
 	e.boardsInto(mixer, func(_ string, b *board) {
+		under := *u
+		var set [dmx.Channels]bool
+		for _, p := range b.plays {
+			v := float64(p.v)
+			if e.dims[p.slot] {
+				if master < 1 {
+					v *= master
+				}
+				was := float64(under[p.slot])
+				v = was + p.level*(v-was)
+			}
+			if out := dmx.Clamp8f(v); !set[p.slot] || out > u[p.slot] {
+				u[p.slot], set[p.slot] = out, true
+			}
+		}
 		for i, v := range &b.over {
 			if v == 0 {
 				continue

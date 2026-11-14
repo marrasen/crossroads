@@ -797,10 +797,13 @@ func (e *Engine) Tick() Live {
 			}
 			e.heard[id] = e.heard[id][:0]
 			for i := 1; i <= mixerIns; i++ {
-				if l, ok := e.input(id, "in"+string(rune('0'+i))).(*mix.Layer); ok {
-					mx.Add(l)
-					e.heard[id] = append(e.heard[id], l)
+				l, ok := e.input(id, "in"+string(rune('0'+i))).(*mix.Layer)
+				if !ok || e.boards[e.layerOf[l]] != nil {
+					// A Board's light is not merged: it goes over the rest.
+					continue
 				}
+				mx.Add(l)
+				e.heard[id] = append(e.heard[id], l)
 			}
 			if e.audition != nil {
 				// The pattern being tried, over all else.
@@ -809,7 +812,7 @@ func (e *Engine) Tick() Live {
 			}
 			mx.SetMaster(m.Value)
 			merged := mx.Merge(&e.dims)
-			e.fadersOver(id, m.Value, &merged)
+			e.boardsOver(id, m.Value, &merged)
 			u, on := e.overrideAll(id, merged)
 			e.values[portKey{id, "out"}] = u
 			live.Values[id] = m.Value

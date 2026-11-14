@@ -63,6 +63,10 @@ func (t *boardTab) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids gu
 type boardPage struct {
 	st     *app.State
 	played engine.Live
+	// menu is the menu a scene's pad opens, and menuOpen whether it
+	// was open when last looked at: as it opened, and at each tick.
+	menu     *widget.ContextMenu
+	menuOpen bool
 	// view is how much of the page the tab shows.
 	view geom.Size
 	// board is the Board the page plays, mixer the Mixer it is wired
@@ -168,6 +172,7 @@ func newBoardPage() *boardPage {
 // click: Rename and Delete, for the scene on the pad pressed then.
 func (b *boardPage) padMenu() *widget.ContextMenu {
 	c := widget.NewContextMenu(b, nil)
+	b.menu = c
 	var board string
 	pad := -1
 	c.Prepare = func(at geom.Point, _ *gunim.UI) bool {
@@ -176,6 +181,7 @@ func (b *boardPage) padMenu() *widget.ContextMenu {
 			return false
 		}
 		c.SetItems([]widget.MenuItem{{Label: "Rename…", Icon: icon.Pencil}, {Label: "Delete", Icon: icon.Trash2}})
+		b.menuOpen = true
 		return true
 	}
 	c.OnPick = func(i int, u *gunim.UI) gunim.Intent {
@@ -265,6 +271,7 @@ func (b *boardPage) show(st *app.State, u *gunim.UI) {
 // holds or its light plays, the master and the overrides.
 func (b *boardPage) live(l engine.Live, u *gunim.UI) {
 	b.played = l
+	b.menuOpen = b.menu != nil && b.menu.Focusable()
 	st := l.Boards[b.board]
 	if !slices.Equal(st.Picked, b.picked) {
 		b.picked = slices.Clone(st.Picked)
@@ -846,6 +853,15 @@ func (b *boardPage) Handle(e input.Event, u *gunim.UI) bool {
 	d, ok := e.(input.PointerDown)
 	if !ok || d.Button != input.ButtonPrimary || b.board == "" {
 		return false
+	}
+	if b.menuOpen {
+		// A pad's menu was open, and this press closed it, as it took
+		// the focus: it does no more than that.
+		b.menuOpen = false
+		if b.menu.Focusable() {
+			b.menu.Toggle(d.Pos, u)
+		}
+		return true
 	}
 	if i := b.sceneAt(d.Pos); i >= 0 {
 		u.Send(b, app.PressPad{Module: b.board, Pad: i})

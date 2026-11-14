@@ -339,8 +339,13 @@ func (e *Engine) owners(m string, on [3]bool, live *Live) {
 			}
 		}
 	}
-	// A Board's fader held has its channel, whatever else plays there.
+	// A Board has the channels it sets, whatever else plays there.
 	e.boardsInto(m, func(id string, b *board) {
+		for _, p := range b.plays {
+			if !on[1] || !e.dims[p.slot] {
+				live.Owners[p.slot+1] = id
+			}
+		}
 		for i, v := range &b.over {
 			if v != 0 && (!on[1] || !e.dims[i]) {
 				live.Owners[i+1] = id

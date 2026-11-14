@@ -135,3 +135,27 @@ func TestABoardsScenesComeBackAsTheyWereSaved(t *testing.T) {
 		t.Errorf("mended, the scenes are %+v", got)
 	}
 }
+
+// TestASceneWhoseLastLightIsRemovedLeavesItsPad: a scene holding
+// nothing is no scene.
+func TestASceneWhoseLastLightIsRemovedLeavesItsPad(t *testing.T) {
+	s := Start()
+	dome := s.Rig.Lights[0].ID
+	var b *Module
+	for i := range s.Modules {
+		if s.Modules[i].Kind == Board {
+			b = &s.Modules[i]
+		}
+	}
+	b.SetScene(Scene{Pad: 3, Name: "Red", Values: map[string]map[int]byte{dome: {1: 255}}})
+	before := s.Clone()
+	s.RemoveLight(dome)
+	if b.Scene(3) != nil {
+		t.Errorf("its only light removed, pad 3 still has %+v", *b.Scene(3))
+	}
+	for _, m := range before.Modules {
+		if m.Kind == Board && (m.Scene(3) == nil || len(m.Scene(3).Values) != 1) {
+			t.Error("removing the light changed the show it was cloned from")
+		}
+	}
+}

@@ -625,7 +625,7 @@ func (a *App) Handle(win int, in gunim.Intent) {
 	case RenameScene:
 		m := s.Module(in.Module)
 		name := strings.TrimSpace(in.Name)
-		if m == nil || m.Scene(in.Pad) == nil || name == "" {
+		if m == nil || m.Scene(in.Pad) == nil || name == "" || m.Scene(in.Pad).Name == name {
 			return
 		}
 		m.Scene(in.Pad).Name = name
@@ -636,9 +636,12 @@ func (a *App) Handle(win int, in gunim.Intent) {
 		}
 		m.Scenes = slices.DeleteFunc(m.Scenes, func(c show.Scene) bool { return c.Pad == in.Pad })
 	case SetSceneFade:
-		if m := s.Module(in.Module); m != nil {
-			m.SceneFade = math.Round(min(max(in.Seconds, 0), show.MaxSceneFade)*10) / 10
+		m := s.Module(in.Module)
+		secs := math.Round(min(max(in.Seconds, 0), show.MaxSceneFade)*10) / 10
+		if m == nil || m.Kind != show.Board || m.SceneFade == secs {
+			return
 		}
+		m.SceneFade = secs
 	case Tap:
 		m := s.Module(in.Module)
 		if m == nil || m.Kind != show.Tempo {

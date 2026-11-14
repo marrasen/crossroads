@@ -24,8 +24,9 @@ The Board is a **module**, like everything else in crossroads, and a
   (Light). Its output is a layer of channel values, as a Look's is, and
   it is wired into a Mixer.
 - **The starting show** gets a Board wired into the Mixer's second
-  input, and the Board tab in front on the right. The Dome, its Lights
-  module and its six faders stay as they are.
+  input, and the Board tab in front on the left, in the larger half of
+  the window. The Dome, its Lights module and its six faders stay as
+  they are.
 - **A show without a Board** (one saved before, or a midittt rig) gets
   the Board tab too. The tab then says the show has no board, with one
   button, "Add a board", which adds the module and wires it into the
@@ -61,14 +62,18 @@ Three sources, merged per channel:
 1. **Scenes that are on.** Where two scenes set the same channel, the
    higher value wins.
 2. **The running chase**, merged with the scenes the same way.
-3. **The faders.** A channel a fader holds wins over scenes and chase,
-   and over whatever else is wired into the Mixer: a fader held plays
-   what it says, under the grand master and blackout. **Clear** lets go
-   of every fader, so the scenes show again.
+3. **The faders.** A channel a fader holds wins over scenes and chase.
+   **Clear** lets go of every fader, so the scenes show again.
+
+**The Board has the channels it sets.** What it plays on a channel wins
+over whatever else is wired into the Mixer, under the grand master and
+blackout. So a fader pulled down really goes down, and recording a
+scene never changes the stage. A scene fading in or out crosses from
+and to what plays under it. A channel the Board does not set shows what
+the other modules play, or the Mixer's home value.
 
 A fader's value is the channel's DMX value, 0 to 255, as on a hardware
-board. No curve is applied. A channel nothing sets is left out of the
-layer, so the Mixer's home value shows.
+board. No curve is applied.
 
 ## Step 1: the X-Touch Mini in Mackie Control mode
 
