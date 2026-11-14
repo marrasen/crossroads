@@ -17,10 +17,11 @@ const (
 	TabLive   = "live"
 	TabWatch  = "monitor"
 	TabDraw   = "patterns"
+	TabBoard  = "board"
 )
 
 // Tabs are the tabs, in the order a new window holds them.
-var Tabs = []string{TabRoutes, TabStage, TabFaders, TabRig, TabPlayer, TabMIDI, TabLive, TabWatch, TabDraw}
+var Tabs = []string{TabRoutes, TabStage, TabFaders, TabRig, TabPlayer, TabMIDI, TabLive, TabWatch, TabDraw, TabBoard}
 
 // TabTitle is what tab t's tab says.
 func TabTitle(t string) string {
@@ -43,6 +44,8 @@ func TabTitle(t string) string {
 		return "Monitor"
 	case TabDraw:
 		return "Patterns"
+	case TabBoard:
+		return "Board"
 	}
 	return t
 }
@@ -50,8 +53,9 @@ func TabTitle(t string) string {
 // Start is the show crossroads opens with: a Fun Generation Diamond
 // Dome at address 1, in the middle of an eight by five metre stage; a
 // Lights module playing it; a fader for each of its colours, wired in;
-// a mixer, a DMX out sending nowhere yet, and the stage view. Routes and
-// Rig stand on the left, the Stage over the Faders on the right.
+// a mixer, and a Board wired into its second input; a DMX out sending
+// nowhere yet, and the stage view. Routes and Rig stand on the left,
+// the Stage over the Board on the right.
 func Start() Show {
 	s := Show{Name: "New show", Stage: Stage{Width: 8, Depth: 5, Spots: map[string]Spot{}}}
 	dome := fixtures.Patch{ID: s.NewID("light"), Name: "Dome", DefinitionID: "fun-generation-led-diamond-dome-mk2",
@@ -62,7 +66,8 @@ func Start() Show {
 	mixer := Module{ID: s.NewID("m"), Kind: Mixer, Name: "Mixer", At: geom.Pt(620, 120), Value: 1}
 	out := Module{ID: s.NewID("m"), Kind: DMXOut, Name: "DMX out", At: geom.Pt(900, 60)}
 	view := Module{ID: s.NewID("m"), Kind: StageView, Name: "Stage", At: geom.Pt(900, 220)}
-	s.Modules = append(s.Modules, lights, mixer, out, view)
+	board := Module{ID: s.NewID("m"), Kind: Board, Name: "Board", At: geom.Pt(320, 460)}
+	s.Modules = append(s.Modules, lights, mixer, out, view, board)
 	for i, c := range []struct {
 		name string
 		role fixtures.Role
@@ -81,6 +86,7 @@ func Start() Show {
 	}
 	s.Wires = append(s.Wires,
 		Wire{ID: s.NewID("w"), From: End{lights.ID, "out"}, To: End{mixer.ID, "in1"}},
+		Wire{ID: s.NewID("w"), From: End{board.ID, "out"}, To: End{mixer.ID, "in2"}},
 		Wire{ID: s.NewID("w"), From: End{mixer.ID, "out"}, To: End{out.ID, "in"}},
 		Wire{ID: s.NewID("w"), From: End{mixer.ID, "out"}, To: End{view.ID, "in"}},
 	)
@@ -89,15 +95,23 @@ func Start() Show {
 }
 
 // DefaultLayout is the layout a new show opens with: Routes, Rig,
-// Controllers and Monitor on the left, the Stage over the Faders,
-// Player and Live on the right, Routes and Faders in front.
+// Controllers and Monitor on the left, the Stage over the Board,
+// Faders, Player and Live on the right, Routes and Board in front.
 func DefaultLayout() dock.Layout {
-	l := dock.NewLayout(true, TabRoutes, TabRig, TabMIDI, TabDraw, TabWatch, TabStage, TabFaders, TabPlayer, TabLive)
+	l := dock.NewLayout(true, TabRoutes, TabRig, TabMIDI, TabDraw, TabWatch, TabStage, TabBoard, TabFaders, TabPlayer, TabLive)
 	l.Move(TabStage, dock.Target{Side: dock.Right})
-	l.Move(TabFaders, dock.Target{At: TabStage, Side: dock.Bottom})
-	l.Move(TabPlayer, dock.Target{At: TabFaders, Index: -1})
-	l.Move(TabLive, dock.Target{At: TabFaders, Index: -1})
-	l.Show(TabFaders)
+	l.Move(TabBoard, dock.Target{At: TabStage, Side: dock.Bottom})
+	l.Move(TabFaders, dock.Target{At: TabBoard, Index: -1})
+	l.Move(TabPlayer, dock.Target{At: TabBoard, Index: -1})
+	l.Move(TabLive, dock.Target{At: TabBoard, Index: -1})
+	l.Show(TabBoard)
 	l.Show(TabRoutes)
+	// The Stage takes less of the right than the Board, whose faders
+	// want the height.
+	if g := l.GroupOf(TabStage); g != nil {
+		if split := l.Parent(g.ID); split != nil {
+			l.SetShare(split.ID, 0.4)
+		}
+	}
 	return l
 }

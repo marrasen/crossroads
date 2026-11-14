@@ -64,7 +64,7 @@ func kindInk(th *theme.Live, k show.Kind) color.NRGBA {
 		return midiInk.Get(th)
 	case show.Map:
 		return valueInk.Get(th)
-	case show.Lights:
+	case show.Lights, show.Board:
 		return lightInk.Get(th)
 	case show.Mixer:
 		return mixerInk.Get(th)

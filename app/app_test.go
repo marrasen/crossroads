@@ -11,6 +11,7 @@ import (
 	"github.com/marrasen/crossroads/engine"
 	"github.com/marrasen/crossroads/pattern"
 	"github.com/marrasen/crossroads/show"
+	"github.com/marrasen/gunim-dmx/enttec"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/widget/dock"
 	"github.com/marrasen/gunim/widget/graph"
@@ -387,5 +388,141 @@ func TestPatternsAreSavedReplacedAndTakenOut(t *testing.T) {
 	a.Handle(0, RemovePattern{ID: "p"})
 	if len(a.st.Show.Patterns) != 1 || a.st.Show.Patterns[0].Name != "Two" {
 		t.Errorf("taken out, the patterns are %+v", a.st.Show.Patterns)
+	}
+}
+
+// withoutBoard is the start show as it was before the Board: no Board
+// module, and no Board tab in its layout.
+func withoutBoard(t *testing.T) show.Show {
+	t.Helper()
+	s := show.Start()
+	for _, m := range s.Modules {
+		if m.Kind == show.Board {
+			s.RemoveModule(m.ID)
+		}
+	}
+	s.Layout.Remove(show.TabBoard)
+	return s
+}
+
+// TestAShowSavedBeforeTheBoardOpensWithTheBoardTab, and Add a board
+// wires one into the first Mixer's first free input, once.
+func TestAShowSavedBeforeTheBoardOpensWithTheBoardTab(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Old.crossroads")
+	old := withoutBoard(t)
+	if err := old.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	s, err := show.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := NewApp(s, path, nil)
+	if _, ok := a.st.Show.Layout.Where(show.TabBoard); !ok {
+		t.Fatal("a show saved before the Board has no Board tab")
+	}
+	a.Handle(0, AddBoard{})
+	b := named(t, a, "Board")
+	mixer := named(t, a, "Mixer").ID
+	var into []string
+	for _, w := range a.st.Show.Wires {
+		if w.From.Module == b.ID {
+			into = append(into, w.To.Module+" "+w.To.Port)
+		}
+	}
+	if len(into) != 1 || into[0] != mixer+" in2" {
+		t.Errorf("the board added is wired into %v, want the mixer's in2", into)
+	}
+	a.Handle(0, AddBoard{})
+	n := 0
+	for _, m := range a.st.Show.Modules {
+		if m.Kind == show.Board {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("Add a board twice made %d boards", n)
+	}
+}
+
+// TestTheBoardPlaysWithoutChangingTheShow: lights picked, a channel
+// held and the board cleared reach the engine, and the show, which
+// does not keep them, is as it was.
+func TestTheBoardPlaysWithoutChangingTheShow(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	b, dome := named(t, a, "Board").ID, a.st.Show.Rig.Lights[0].ID
+	a.Handle(0, Pick{Module: b, Lights: []string{dome}})
+	a.Handle(0, Hold{Module: b, Channels: []engine.Channel{{Light: dome, Offset: 2}}, Value: 300})
+	live := a.eng.Tick()
+	if st := live.Boards[b]; len(st.Picked) != 1 || live.Stage[1] != 255 {
+		t.Errorf("picked and held at 300, the board shows %+v and green plays %d", st, live.Stage[1])
+	}
+	a.Handle(0, ClearBoard{Module: b})
+	if live := a.eng.Tick(); live.Stage[1] != 0 || len(live.Boards[b].Held) != 0 {
+		t.Errorf("cleared, green plays %d", live.Stage[1])
+	}
+	if a.st.Unsaved {
+		t.Error("playing the board changed the show")
+	}
+}
+
+// TestAUSBBoxsPortsAreLookedForOnTheSide: choosing an ENTTEC box looks
+// for the serial ports, and what is found comes back to the windows.
+func TestAUSBBoxsPortsAreLookedForOnTheSide(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	found := make(chan struct{})
+	a.Serial = func() ([]enttec.PortInfo, error) {
+		<-found
+		return []enttec.PortInfo{{Name: "COM3", Product: "DMX USB PRO"}}, nil
+	}
+	out := named(t, a, "DMX out").ID
+	a.Handle(0, SetOutput{Module: out, Out: show.Output{Device: "enttec", Port: "COM3"}})
+	if m := named(t, a, "DMX out"); m.Out.Port != "COM3" || a.st.Ports != nil {
+		t.Fatalf("the DMX out sends to %+v, ports %v", m.Out, a.st.Ports)
+	}
+	close(found)
+	if got, ok := (<-a.in).(portsFound); !ok || len(got) != 1 || got[0].Name != "COM3" {
+		t.Errorf("the ports found are %v", got)
+	}
+}
+
+// TestANewShowStartsWithNothingHeldOnTheBoard: a new show's Board and
+// Mixer have the IDs of the show before; what it held, and its blackout,
+// do not come along.
+func TestANewShowStartsWithNothingHeldOnTheBoard(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	b, mixer, dome := named(t, a, "Board").ID, named(t, a, "Mixer").ID, a.st.Show.Rig.Lights[0].ID
+	a.Handle(0, Pick{Module: b, Lights: []string{dome}})
+	a.Handle(0, Hold{Module: b, Channels: []engine.Channel{{Light: dome, Offset: 2}}, Value: 200})
+	a.Handle(0, Override{Module: mixer, Which: engine.Blackout, On: true})
+	a.Handle(0, New{})
+	if named(t, a, "Board").ID != b {
+		t.Fatal("the new show's board has another ID, so this test checks nothing")
+	}
+	live := a.eng.Tick()
+	if st := live.Boards[b]; len(st.Picked) != 0 || len(st.Held) != 0 || live.Stage[1] != 0 {
+		t.Errorf("a new show's board shows %+v and green plays %d", st, live.Stage[1])
+	}
+	if live.Overrides[mixer][0] {
+		t.Error("a new show opens blacked out")
+	}
+}
+
+// TestAUniverseStaysWithinWhatItsBoxTakes: an Art-Net port address is
+// 0 to 32767, an sACN universe 1 to 63999, as the box is picked too.
+func TestAUniverseStaysWithinWhatItsBoxTakes(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	out := named(t, a, "DMX out").ID
+	for _, c := range []struct {
+		device   string
+		universe int
+		want     int
+	}{
+		{"sacn", 40000, 40000}, {"artnet", 40000, 32767}, {"sacn", 0, 1}, {"sacn", 70000, 63999}, {"artnet", -3, 0},
+	} {
+		a.Handle(0, SetOutput{Module: out, Out: show.Output{Device: c.device, Host: "10.0.0.2", Universe: c.universe}})
+		if got := named(t, a, "DMX out").Out.Universe; got != c.want {
+			t.Errorf("%s universe %d is kept as %d, want %d", c.device, c.universe, got, c.want)
+		}
 	}
 }

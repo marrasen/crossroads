@@ -11,6 +11,7 @@ import (
 	"github.com/marrasen/crossroads/routing"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
+	"github.com/marrasen/gunim-dmx/enttec"
 	"github.com/marrasen/gunim/audio/capture"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/gunimtest"
@@ -28,6 +29,8 @@ func TestAWindowShowsTheShowAndItsFadersPlay(t *testing.T) {
 	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
 	c := w.Client()
 	st := app.State{Show: show.Start()}
+	// The Board stands in front of the Faders as a show starts.
+	st.Show.Layout.Show(show.TabFaders)
 	if err := c.Mount(gunim.Root, View, View, st, app.ShowTopic, app.LiveTopic); err != nil {
 		t.Fatal(err)
 	}
@@ -599,4 +602,209 @@ func findButton(n gunim.Node, label string) *widget.Button {
 		}
 	}
 	return nil
+}
+
+// TestTheBoardTabPicksALightAndHoldsAChannel: the tab builds with a pad
+// for the dome and no faders; a click on the pad picks it, Ctrl+click
+// adds or takes it out; once picked, a fader for each of its channels,
+// and the green one dragged up asks to hold green.
+func TestTheBoardTabPicksALightAndHoldsAChannel(t *testing.T) {
+	s := show.Start()
+	w := testWindow(t, geom.Sz(1280, 800))
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: s}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	e := engine.New(nil)
+	defer e.Close()
+	e.Set(s)
+	tick := func() {
+		if err := c.Patch(app.LiveTopic, e.Tick()); err != nil {
+			t.Fatal(err)
+		}
+		for range 3 {
+			w.Frame(time.Second / 60)
+		}
+	}
+	tick()
+	tab, ok := frameOf(t, w).tabs[show.TabBoard].(*boardTab)
+	if !ok {
+		t.Fatal("no Board tab in front")
+	}
+	b := tab.page
+	dome := s.Rig.Lights[0].ID
+	if b.board == "" || b.mixer == "" || b.out == "" || len(b.pads) != 1 || len(b.faders) != 0 {
+		t.Fatalf("the tab plays board %q into %q and %q, with %d pads and %d faders", b.board, b.mixer, b.out, len(b.pads), len(b.faders))
+	}
+	ui := frameUI(t, w)
+	at, _ := ui.Bounds(b)
+	click := func(mods input.Mods) []gunim.Intent {
+		p := at.Min.Add(b.pads[0].r.Center())
+		w.Input(input.PointerMove{Pos: p})
+		w.Input(input.PointerDown{Pos: p, Button: input.ButtonPrimary, Mods: mods, Clicks: 1})
+		w.Input(input.PointerUp{Pos: p, Button: input.ButtonPrimary, Mods: mods})
+		w.Frame(time.Second / 60)
+		var got []gunim.Intent
+		for len(c.Intents()) > 0 {
+			got = append(got, (<-c.Intents()).Intent)
+		}
+		return got
+	}
+	got := click(0)
+	if len(got) != 1 {
+		t.Fatalf("a click on the dome asks %v", got)
+	}
+	if pk, ok := got[0].(app.Pick); !ok || pk.Module != b.board || len(pk.Lights) != 1 || pk.Lights[0] != dome || pk.Toggle {
+		t.Errorf("a click on the dome asks %#v", got[0])
+	}
+	if got := click(input.ModControl); len(got) != 1 || !got[0].(app.Pick).Toggle {
+		t.Errorf("Ctrl+click on the dome asks %v", got)
+	}
+	e.Pick(b.board, []string{dome}, false)
+	tick()
+	if len(b.faders) != 9 || b.faders[1].Name != "Green" {
+		t.Fatalf("the dome picked has %d faders", len(b.faders))
+	}
+	if !b.dim(b.faders[1].s) {
+		t.Error("a fader nothing holds is not drawn dim")
+	}
+	r, ok := ui.Bounds(b.faders[1].s)
+	if !ok {
+		t.Fatal("the green fader is not drawn")
+	}
+	from := geom.Pt(r.Center().X, r.Max.Y-4)
+	w.Input(input.PointerMove{Pos: from})
+	w.Input(input.PointerDown{Pos: from, Button: input.ButtonPrimary, Clicks: 1})
+	w.Input(input.PointerMove{Pos: geom.Pt(from.X, r.Min.Y-20)})
+	w.Input(input.PointerUp{Pos: geom.Pt(from.X, r.Min.Y-20), Button: input.ButtonPrimary})
+	w.Frame(time.Second / 60)
+	var held *app.Hold
+	for len(c.Intents()) > 0 {
+		if h, ok := (<-c.Intents()).Intent.(app.Hold); ok {
+			held = &h
+		}
+	}
+	if held == nil || held.Module != b.board || held.Value != 255 || len(held.Channels) != 1 ||
+		held.Channels[0] != (engine.Channel{Light: dome, Offset: 2}) {
+		t.Fatalf("green dragged to the top asks %+v", held)
+	}
+	e.Hold(held.Module, held.Channels, byte(held.Value))
+	tick()
+	if b.dim(b.faders[1].s) || b.faders[1].value != 255 || b.clear.Disabled {
+		t.Error("a fader held is drawn dim, or Clear has nothing to let go of")
+	}
+}
+
+// TestADMXOutOffersItsPortAndAddress: a USB box offers Find it and the
+// ports found, one gone kept; Art-Net offers the address, sent as it is
+// typed, and the universe.
+func TestADMXOutOffersItsPortAndAddress(t *testing.T) {
+	s := show.Start()
+	out := ""
+	for i := range s.Modules {
+		if s.Modules[i].Kind == show.DMXOut {
+			out = s.Modules[i].ID
+			s.Modules[i].Out = show.Output{Device: "enttec", Port: "COM9"}
+		}
+	}
+	w := testWindow(t, geom.Sz(1280, 800))
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	st := app.State{Show: s, Ports: []enttec.PortInfo{{Name: "COM3", Product: "DMX USB PRO"}}}
+	if err := c.Mount(gunim.Root, View, View, st, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		w.Frame(time.Second / 60)
+	}
+	f := frameOf(t, w)
+	r, ok := f.tabs[show.TabRoutes].(*routes)
+	if !ok || r.outputs[out] == nil {
+		t.Fatal("the DMX out's box has no fields")
+	}
+	fs := r.outputs[out]
+	labels := make([]string, 0, len(fs.port.Items()))
+	for _, it := range fs.port.Items() {
+		labels = append(labels, it.Label)
+	}
+	if strings.Join(labels, "|") != "Find it|COM3 — DMX USB PRO|COM9 (not plugged in)" || fs.port.Selected() != 2 || fs.more.shown != fs.usb {
+		t.Fatalf("the port list offers %v, chosen %d", labels, fs.port.Selected())
+	}
+	if in, ok := fs.port.OnChange(1, nil).(app.SetOutput); !ok || in.Out != (show.Output{Device: "enttec", Port: "COM3"}) {
+		t.Errorf("COM3 chosen asks %#v", in)
+	}
+	if in, ok := fs.port.OnChange(0, nil).(app.SetOutput); !ok || in.Out.Port != "" {
+		t.Errorf("Find it chosen asks %#v", in)
+	}
+	s.Module(out).Out = show.Output{Device: "artnet", Universe: 4}
+	st.Show = s
+	if err := c.Publish(app.ShowTopic, st); err != nil {
+		t.Fatal(err)
+	}
+	w.Frame(time.Second / 60)
+	if fs.more.shown != fs.net || fs.uni.Value() != 4 {
+		t.Fatalf("Art-Net shows %v, universe %v", fs.more.shown, fs.uni.Value())
+	}
+	if in, ok := fs.host.OnCommit(" 10.0.0.5 ", nil).(app.SetOutput); !ok || in.Out != (show.Output{Device: "artnet", Host: "10.0.0.5", Universe: 4}) {
+		t.Errorf("an address typed asks %#v", in)
+	}
+	if in, ok := fs.uni.OnCommit(7, nil).(app.SetOutput); !ok || in.Out.Universe != 7 {
+		t.Errorf("universe 7 typed asks %#v", in)
+	}
+	if b := f.tabs[show.TabBoard].(*boardTab).page; b.output.module != out || b.output.more.shown != b.output.net {
+		t.Error("the Board tab's output row is not the DMX out's")
+	}
+}
+
+// TestABoardAddedToAShowWhoseOutputIsSetShowsTheOutput: a show with no
+// Board, its DMX out sending to Art-Net, gets a Board; the tab then
+// shows the output's fields, which were not in the tree before.
+func TestABoardAddedToAShowWhoseOutputIsSetShowsTheOutput(t *testing.T) {
+	s := show.Start()
+	var board show.Module
+	for _, m := range s.Modules {
+		if m.Kind == show.Board {
+			board = m
+		}
+	}
+	wires := append([]show.Wire(nil), s.Wires...)
+	s.RemoveModule(board.ID)
+	for i := range s.Modules {
+		if s.Modules[i].Kind == show.DMXOut {
+			s.Modules[i].Out = show.Output{Device: "artnet", Host: "10.0.0.2", Universe: 1}
+		}
+	}
+	w := testWindow(t, geom.Sz(1280, 800))
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: s}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		w.Frame(time.Second / 60)
+	}
+	tab, ok := frameOf(t, w).tabs[show.TabBoard].(*boardTab)
+	if !ok || tab.page.board != "" {
+		t.Fatal("the Board tab is not in front, or plays a board the show does not have")
+	}
+	with := s.Clone()
+	with.Modules = append(with.Modules, board)
+	with.Wires = wires
+	if err := c.Publish(app.ShowTopic, app.State{Show: with}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		w.Frame(time.Second / 60)
+	}
+	b := tab.page
+	if b.board == "" || b.out == "" {
+		t.Fatalf("the board added, the tab plays board %q and output %q", b.board, b.out)
+	}
+	if _, ok := frameUI(t, w).Bounds(b.output.root); !ok {
+		t.Error("the output's fields are not drawn")
+	}
 }

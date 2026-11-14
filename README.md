@@ -15,12 +15,19 @@ takes over from midittt.
 
 **Status:** a first skeleton. It opens with a Fun Generation Diamond
 Dome on an eight by five metre stage, a fader for each of its colours,
-a mixer, a DMX out and the stage view, all wired up:
+a board, a mixer, a DMX out and the stage view, all wired up:
 
 - **Routes** shows the modules and their wires. Drag from a port to
   join it to another of the same kind; Add module adds one.
 - **Stage** shows the room from above, each light glowing as it plays.
   Drag a light to hang it elsewhere.
+- **Board** plays the lights by hand, as a lighting desk does. Click a
+  light, or a group, to pick it; Ctrl+click picks more. A fader for
+  each channel of what is picked holds its DMX value, 0 to 255, until
+  Clear lets go. Lights of different types get a fader for each thing
+  they do between them. The grand master, Blackout and Flash are
+  there, and the DMX box it all goes out on: its serial port, or its
+  address and universe.
 - **Faders** is a fader for each fader module, and the grand master.
 - **Rig** is the lights, their types and their addresses.
 - **Player** is the playlist and the transport.
