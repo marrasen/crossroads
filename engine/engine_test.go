@@ -77,9 +77,9 @@ func TestWiresJoinOneSignalOnceAndNeverInALoop(t *testing.T) {
 		ok       bool
 	}{
 		{show.End{Module: fader.ID, Port: "out"}, show.End{Module: dome.ID, Port: "strobe"}, true},
-		{show.End{Module: fader.ID, Port: "out"}, show.End{Module: mixer.ID, Port: "in2"}, false},
+		{show.End{Module: fader.ID, Port: "out"}, show.End{Module: mixer.ID, Port: "in3"}, false},
 		{show.End{Module: fader.ID, Port: "out"}, show.End{Module: dome.ID, Port: "red"}, false},
-		{show.End{Module: dome.ID, Port: "out"}, show.End{Module: mixer.ID, Port: "in2"}, true},
+		{show.End{Module: dome.ID, Port: "out"}, show.End{Module: mixer.ID, Port: "in3"}, true},
 	} {
 		if ok, why := CanJoin(&s, c.from, c.to); ok != c.ok {
 			t.Errorf("%v to %v: %v (%s), want %v", c.from, c.to, ok, why, c.ok)
@@ -88,8 +88,8 @@ func TestWiresJoinOneSignalOnceAndNeverInALoop(t *testing.T) {
 	// A second mixer fed by the first may not feed it back.
 	m2 := show.Module{ID: s.NewID("m"), Kind: show.Lights, Name: "Back"}
 	s.Modules = append(s.Modules, m2)
-	s.Wires = append(s.Wires, show.Wire{ID: "x", From: show.End{Module: dome.ID, Port: "out"}, To: show.End{Module: mixer.ID, Port: "in2"}})
-	if ok, _ := CanJoin(&s, show.End{Module: mixer.ID, Port: "out"}, show.End{Module: mixer.ID, Port: "in3"}); ok {
+	s.Wires = append(s.Wires, show.Wire{ID: "x", From: show.End{Module: dome.ID, Port: "out"}, To: show.End{Module: mixer.ID, Port: "in3"}})
+	if ok, _ := CanJoin(&s, show.End{Module: mixer.ID, Port: "out"}, show.End{Module: mixer.ID, Port: "in4"}); ok {
 		t.Error("a mixer fed its own output")
 	}
 }

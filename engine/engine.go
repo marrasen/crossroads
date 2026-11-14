@@ -144,6 +144,8 @@ func Ports(s *show.Show, m *show.Module) (ins, outs []Port) {
 		return []Port{{"clock", "Clock", Clock}}, []Port{{"out", "Light", Light}, {"fired", "Fired", Trigger}}
 	case show.Effect:
 		return []Port{{"go", "Go", Trigger}, {"clock", "Clock", Clock}}, []Port{{"out", "Light", Light}}
+	case show.Board:
+		return []Port{{"clock", "Clock", Clock}}, []Port{{"out", "Light", Light}}
 	}
 	return nil, nil
 }
@@ -239,6 +241,8 @@ type Live struct {
 	Log []Note
 	// Timers are what each Timer shows, by module.
 	Timers map[string]TimerState
+	// Boards are what each Board shows, by module.
+	Boards map[string]BoardState
 }
 
 // An Engine runs a show's modules.
@@ -328,6 +332,8 @@ type Engine struct {
 	// show's effect programmes, by ID.
 	effects  map[string]*fxRunner
 	programs map[string]fx.Program
+	// boards are each Board's lights picked and channels held.
+	boards map[string]*board
 	// audition is the pattern the editor plays while its test button
 	// is held, audLayer its light, and audBeats the beat it counts
 	// where the show has no Tempo.
@@ -371,7 +377,7 @@ func New(changed func()) *Engine {
 		steppers: map[string]*stepper{}, held: map[portKey]bool{}, frozen: map[string]dmx.Universe{}, layerOf: map[*mix.Layer]string{},
 		clockIns: map[string]*clockIn{}, clockOuts: map[string]*clockOut{}, sync: syncs{deck: -1},
 		timers: map[string]*timer{}, patterns: map[string]pattern.Pattern{}, hub: newHub(), routers: map[string]*router{},
-		effects: map[string]*fxRunner{}, programs: map[string]fx.Program{}, audLayer: mix.NewLayer()}
+		effects: map[string]*fxRunner{}, programs: map[string]fx.Program{}, boards: map[string]*board{}, audLayer: mix.NewLayer()}
 }
 
 // Set runs show s from now on: its modules in its wires' order, with a
@@ -407,7 +413,7 @@ func (e *Engine) Set(s show.Show) {
 	for _, m := range e.s.Modules {
 		keep[m.ID] = true
 		switch m.Kind {
-		case show.Lights, show.Look, show.Chaser, show.Cues, show.Pattern, show.Effect:
+		case show.Lights, show.Look, show.Chaser, show.Cues, show.Pattern, show.Effect, show.Board:
 			if m.Kind == show.Effect && e.effects[m.ID] == nil {
 				e.effects[m.ID] = &fxRunner{}
 			}
@@ -569,6 +575,7 @@ func (e *Engine) Set(s show.Show) {
 			delete(e.routers, id)
 		}
 	}
+	e.keepBoards(cat)
 	e.hub.want(&e.s)
 	for id, co := range e.clockOuts {
 		if m := e.s.Module(id); m == nil || m.Kind != show.ClockOut {
@@ -620,7 +627,22 @@ func (e *Engine) open(o show.Output) *out {
 			opener = func() (dmx.Device, error) { return enttec.OpenPro(o.Port) }
 		}
 	case "opendmx":
-		opener = func() (dmx.Device, error) { return enttec.OpenOpenDMX(o.Port) }
+		opener = func() (dmx.Device, error) {
+			port := o.Port
+			if port == "" {
+				// Found: the first port that looks like an ENTTEC box.
+				ports, err := enttec.ListPorts()
+				if err != nil {
+					return nil, err
+				}
+				p, ok := enttec.PickPort(ports)
+				if !ok {
+					return nil, errors.New("no Open DMX found: pick its serial port")
+				}
+				port = p.Name
+			}
+			return enttec.OpenOpenDMX(port)
+		}
 	case "artnet":
 		opener = func() (dmx.Device, error) {
 			if o.Host == "" {
@@ -731,7 +753,7 @@ func (e *Engine) Tick() Live {
 	cat := e.s.Catalog()
 	live := Live{Values: map[string]float64{}, Outs: map[string]dmx.State{}, Clocks: map[string]Count{}, Says: map[string]string{},
 		Desks: map[string]Desk{}, Steps: map[string]Stepping{}, Overrides: map[string][3]bool{},
-		Timers: map[string]TimerState{}}
+		Timers: map[string]TimerState{}, Boards: map[string]BoardState{}}
 	stageMixer := e.stageMixer()
 	staged := false
 	now := e.now()
@@ -836,6 +858,8 @@ func (e *Engine) Tick() Live {
 			e.route(m, cat, now, &live)
 		case show.Effect:
 			e.effect(m, cat, now, &live)
+		case show.Board:
+			e.playBoard(m, cat, &live)
 		case show.Button:
 			fired := e.pressed[id]
 			e.values[portKey{id, "out"}] = fired
@@ -845,6 +869,7 @@ func (e *Engine) Tick() Live {
 			}
 		}
 	}
+	e.boardsPlay(&live)
 	live.Playing = Playing{Song: e.song, Pos: e.state.Pos, Len: e.state.Len, Playing: e.state.Playing, Err: e.deckErr}
 	live.Log = slices.Clone(e.log)
 	return live

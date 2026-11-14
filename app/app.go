@@ -22,6 +22,7 @@ import (
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
 	"github.com/marrasen/gunim-dmx/dmx"
+	"github.com/marrasen/gunim-dmx/enttec"
 	"github.com/marrasen/gunim-dmx/fixtures"
 	"github.com/marrasen/gunim/driver"
 	"github.com/marrasen/gunim/geom"
@@ -49,6 +50,9 @@ type State struct {
 	// what of it plays differently, for the windows to tell, once.
 	Imported string
 	Notes    []string
+	// Ports are the serial ports a USB DMX box may be on, as last
+	// looked for; nil before they are.
+	Ports []enttec.PortInfo
 }
 
 // Title is the windows' title.
@@ -97,6 +101,26 @@ type (
 		Module string
 		Out    show.Output
 	}
+	// FindPorts looks for the serial ports a USB DMX box may be on.
+	FindPorts struct{}
+	// AddBoard adds a Board, wired into the first Mixer's first free
+	// input, to a show that has none.
+	AddBoard struct{}
+	// Pick picks Lights on Board Module: those alone, or, with Toggle,
+	// adds them, or takes them out where all of them are picked.
+	Pick struct {
+		Module string
+		Lights []string
+		Toggle bool
+	}
+	// Hold has Board Module's faders hold Channels at Value, 0 to 255.
+	Hold struct {
+		Module   string
+		Channels []engine.Channel
+		Value    int
+	}
+	// ClearBoard lets go of every channel Board Module's faders hold.
+	ClearBoard struct{ Module string }
 	// Tap taps Tempo Module's beat: the beat falls on the tap, and taps
 	// a steady gap apart set its tempo, which it then plays.
 	Tap struct{ Module string }
@@ -270,6 +294,10 @@ type App struct {
 	Scan     func(path string) (show.Scan, error)
 	scanning map[string]string
 	lanes    chan struct{}
+	// Serial lists the serial ports; [enttec.ListPorts] where it is nil.
+	// finding says it is listing them now.
+	Serial  func() ([]enttec.PortInfo, error)
+	finding bool
 }
 
 // scanLanes is how many songs are scanned at once.
@@ -297,6 +325,10 @@ type scanned struct {
 	scan       show.Scan
 	err        error
 }
+
+// portsFound are the serial ports found, coming back to the
+// application's goroutine.
+type portsFound []enttec.PortInfo
 
 // fromWin is an intent from window id, or word that it closed.
 type fromWin struct {
@@ -346,6 +378,7 @@ func (a *App) State() State { return a.st }
 func (a *App) Run(ctx context.Context) error {
 	defer a.eng.Close()
 	a.scanSongs()
+	a.portsWanted()
 	for _, w := range a.st.Show.Layout.Windows {
 		if err := a.openWindow(w.ID, nil, geom.Pt(80, 80), geom.Sz(1280, 800), w.Place); err != nil {
 			if w.ID == 0 {
@@ -387,6 +420,11 @@ func (a *App) Run(ctx context.Context) error {
 				continue
 			case scanned:
 				a.scanned(m)
+				continue
+			case portsFound:
+				a.finding = false
+				a.st.Ports = m
+				a.publish()
 				continue
 			}
 			fw, ok := m.(fromWin)
@@ -522,7 +560,27 @@ func (a *App) Handle(win int, in gunim.Intent) {
 	case SetOutput:
 		if m := s.Module(in.Module); m != nil {
 			m.Out = in.Out
+			m.Out.Universe = max(m.Out.Universe, 0)
 		}
+		if usb(in.Out) && a.st.Ports == nil {
+			a.findPorts()
+		}
+	case FindPorts:
+		a.findPorts()
+		return
+	case AddBoard:
+		if !addBoard(&s) {
+			return
+		}
+	case Pick:
+		a.eng.Pick(in.Module, in.Lights, in.Toggle)
+		return
+	case Hold:
+		a.eng.Hold(in.Module, in.Channels, byte(min(max(in.Value, 0), 255)))
+		return
+	case ClearBoard:
+		a.eng.ClearBoard(in.Module)
+		return
 	case Tap:
 		m := s.Module(in.Module)
 		if m == nil || m.Kind != show.Tempo {
@@ -913,12 +971,80 @@ func (a *App) replace(s show.Show, path string) {
 	}
 	prune(&s)
 	clear(a.moving)
-	a.st = State{Show: s, Path: path, Songs: map[string]string{}}
+	a.st = State{Show: s, Path: path, Songs: map[string]string{}, Ports: a.st.Ports}
 	clear(a.scanning)
 	a.eng.Set(s)
 	a.scanSongs()
+	a.portsWanted()
 	a.syncWindows()
 	a.publish()
+}
+
+// addBoard adds a Board to s, where it has none, wired into the first
+// Mixer's first free input, and reports whether it did.
+func addBoard(s *show.Show) bool {
+	if slices.ContainsFunc(s.Modules, func(m show.Module) bool { return m.Kind == show.Board }) {
+		return false
+	}
+	b := show.Module{ID: s.NewID("m"), Kind: show.Board, Name: show.Board.Title()}
+	i := slices.IndexFunc(s.Modules, func(m show.Module) bool { return m.Kind == show.Mixer })
+	if i < 0 {
+		s.Modules = append(s.Modules, b)
+		return true
+	}
+	mixer := s.Modules[i]
+	b.At = mixer.At.Add(geom.Pt(-300, 340))
+	s.Modules = append(s.Modules, b)
+	from := show.End{Module: b.ID, Port: "out"}
+	ins, _ := engine.Ports(s, &mixer)
+	for _, p := range ins {
+		to := show.End{Module: mixer.ID, Port: p.ID}
+		if ok, _ := engine.CanJoin(s, from, to); ok {
+			s.Wires = append(s.Wires, show.Wire{ID: s.NewID("w"), From: from, To: to})
+			break
+		}
+	}
+	return true
+}
+
+// usb reports whether o is a USB box, on a serial port.
+func usb(o show.Output) bool { return o.Device == "enttec" || o.Device == "opendmx" }
+
+// portsWanted looks for the serial ports where a DMX out of the show
+// sends to a USB box and they were never looked for.
+func (a *App) portsWanted() {
+	if a.st.Ports != nil {
+		return
+	}
+	for _, m := range a.st.Show.Modules {
+		if m.Kind == show.DMXOut && usb(m.Out) {
+			a.findPorts()
+			return
+		}
+	}
+}
+
+// findPorts looks for the serial ports on a goroutine of its own, as
+// the system may take a moment, and the show plays on meanwhile.
+func (a *App) findPorts() {
+	if a.finding {
+		return
+	}
+	a.finding = true
+	list := a.Serial
+	if list == nil {
+		list = enttec.ListPorts
+	}
+	go func() {
+		ports, err := list()
+		if err != nil {
+			log.Printf("crossroads: %v", err)
+		}
+		if ports == nil {
+			ports = []enttec.PortInfo{}
+		}
+		a.in <- portsFound(ports)
+	}()
 }
 
 // addLight adds a light of type def at the first address it fits.

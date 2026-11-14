@@ -142,12 +142,15 @@ const (
 	// Effect plays one of the show's effect programmes as it is
 	// triggered: a short move over its lights' channels.
 	Effect Kind = "effect"
+	// Board is a lighting desk on the Board tab: the lights picked, and
+	// a fader for each of their channels, which holds its DMX value.
+	Board Kind = "board"
 )
 
 // Kinds are the kinds of module, in the order the Routes tab offers
 // them.
 var Kinds = []Kind{Fader, Lights, Mixer, DMXOut, StageView, AudioIn, Beat, Tempo, Level, Pulse, Player, Button,
-	Controller, MIDIOut, Map, Every, Toggle, Look, Chaser, Cues, Link, Serato, ClockIn, ClockOut, Timer, Pattern, Routes, Effect}
+	Controller, MIDIOut, Map, Every, Toggle, Look, Chaser, Cues, Link, Serato, ClockIn, ClockOut, Timer, Pattern, Routes, Effect, Board}
 
 // Title is what a module of kind k is called.
 func (k Kind) Title() string {
@@ -208,6 +211,8 @@ func (k Kind) Title() string {
 		return "MIDI routes"
 	case Effect:
 		return "Effect"
+	case Board:
+		return "Board"
 	}
 	return string(k)
 }

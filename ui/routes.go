@@ -11,7 +11,6 @@ import (
 	"github.com/marrasen/crossroads/engine"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
-	"github.com/marrasen/gunim-dmx/dmx"
 	"github.com/marrasen/gunim-dmx/fixtures"
 	"github.com/marrasen/gunim/audio/capture"
 	"github.com/marrasen/gunim/geom"
@@ -24,7 +23,7 @@ import (
 
 // routes is the Routes tab: the show's modules joined by wires, and a
 // menu over them that adds modules. A fader's box holds its
-// fader, and a DMX out's the box it sends to.
+// fader, and a DMX out's the box it sends to, and where.
 type routes struct {
 	view    *graph.View
 	add     *widget.MenuButton
@@ -32,7 +31,7 @@ type routes struct {
 	played  engine.Live
 	th      *theme.Live
 	faders  map[string]*widget.Slider
-	devices map[string]*widget.Dropdown
+	outputs map[string]*outputFields
 	// The controls of the modules that hear and count: each Audio in's
 	// input, each Tempo's tap button, its tempo and its follow box,
 	// and each Pulse's length.
@@ -62,17 +61,8 @@ type routes struct {
 	ports map[string][2][]engine.Port
 }
 
-// The DMX boxes a DMX out offers, by the show's names for them.
-var devices = []struct{ id, name string }{
-	{"", "Nowhere"},
-	{"enttec", "ENTTEC USB Pro"},
-	{"opendmx", "ENTTEC Open DMX"},
-	{"artnet", "Art-Net"},
-	{"sacn", "sACN"},
-}
-
 func newRoutes() *routes {
-	r := &routes{view: graph.NewView(), faders: map[string]*widget.Slider{}, devices: map[string]*widget.Dropdown{},
+	r := &routes{view: graph.NewView(), faders: map[string]*widget.Slider{}, outputs: map[string]*outputFields{},
 		inputs: map[string]*widget.Dropdown{}, taps: map[string]*widget.Button{}, bpms: map[string]*widget.NumberField{}, follows: map[string]*widget.Checkbox{},
 		everys: map[string]*widget.Segmented{}, maps: map[string]*mapFields{}, levels: map[string]map[string]*widget.Slider{},
 		fades: map[string]*widget.Slider{}, cueFades: map[string]*widget.NumberField{},
@@ -112,7 +102,7 @@ var addGroups = []struct {
 	title string
 	kinds []show.Kind
 }{
-	{"Light", []show.Kind{show.Fader, show.Lights, show.Mixer, show.DMXOut, show.StageView}},
+	{"Light", []show.Kind{show.Fader, show.Lights, show.Board, show.Mixer, show.DMXOut, show.StageView}},
 	{"Sound and beat", []show.Kind{show.AudioIn, show.Player, show.Beat, show.Tempo, show.Level, show.Pulse}},
 	{"Looks", []show.Kind{show.Look, show.Chaser, show.Cues, show.Pattern, show.Effect}},
 	{"Sync", []show.Kind{show.Link, show.Serato, show.ClockIn, show.ClockOut}},
@@ -126,6 +116,8 @@ func kindIcon(k show.Kind) *icon.Icon {
 		return icon.SlidersVertical
 	case show.Lights:
 		return icon.Lightbulb
+	case show.Board:
+		return icon.SlidersHorizontal
 	case show.Mixer:
 		return icon.Blend
 	case show.DMXOut:
@@ -201,26 +193,10 @@ func (r *routes) content(id string) gunim.Node {
 		r.faders[id] = s
 		return padded(s)
 	case show.DMXOut:
-		names := make([]string, len(devices))
-		for i, d := range devices {
-			names[i] = d.name
-		}
-		d := widget.NewDropdown(widget.Labels(names...))
-		for i, dv := range devices {
-			if dv.id == m.Out.Device {
-				d.SetSelected(i, nil)
-			}
-		}
-		d.OnChange = func(i int, _ *gunim.UI) gunim.Intent {
-			out := m.Out
-			if mm := r.st.Show.Module(id); mm != nil {
-				out = mm.Out
-			}
-			out.Device = devices[i].id
-			return app.SetOutput{Module: id, Out: out}
-		}
-		r.devices[id] = d
-		return padded(d)
+		f := newOutputFields(id, true)
+		f.set(id, m.Out, r.st.Ports, nil)
+		r.outputs[id] = f
+		return padded(f.root)
 	case show.AudioIn:
 		return r.inputContent(m)
 	case show.Tempo:
@@ -549,18 +525,11 @@ func (r *routes) show(s *app.State, u *gunim.UI) {
 		ins, outs := engine.Ports(&s.Show, m)
 		r.ports[m.ID] = [2][]engine.Port{ins, outs}
 	}
-	for id, d := range r.devices {
-		if m := s.Show.Module(id); m != nil {
-			for i, dv := range devices {
-				if dv.id == m.Out.Device {
-					d.SetSelected(i, u)
-				}
-			}
-		}
+	maps.DeleteFunc(r.outputs, func(id string, _ *outputFields) bool { return s.Show.Module(id) == nil })
+	for id, f := range r.outputs {
+		f.set(id, s.Show.Module(id).Out, s.Ports, u)
 	}
-	for _, m := range []map[string]*widget.Dropdown{r.devices, r.inputs} {
-		maps.DeleteFunc(m, func(id string, _ *widget.Dropdown) bool { return s.Show.Module(id) == nil })
-	}
+	maps.DeleteFunc(r.inputs, func(id string, _ *widget.Dropdown) bool { return s.Show.Module(id) == nil })
 	maps.DeleteFunc(r.faders, func(id string, _ *widget.Slider) bool { return s.Show.Module(id) == nil })
 	maps.DeleteFunc(r.taps, func(id string, _ *widget.Button) bool { return s.Show.Module(id) == nil })
 	maps.DeleteFunc(r.bpms, func(id string, _ *widget.NumberField) bool { return s.Show.Module(id) == nil })
@@ -664,7 +633,12 @@ func (r *routes) sync(u *gunim.UI) {
 		case show.Fader:
 			n.Body = 30
 			n.Glow = float32(r.value(m)) * 0.6
-		case show.DMXOut, show.AudioIn:
+		case show.DMXOut:
+			n.Body, n.Width = 36, 260
+			if m.Out.Device != "" {
+				n.Body = 76
+			}
+		case show.AudioIn:
 			n.Body = 36
 		case show.Tempo:
 			n.Body, n.Width = 76, 240
@@ -756,18 +730,11 @@ func (r *routes) detail(m *show.Module) string {
 	case show.Mixer:
 		return fmt.Sprintf("Master %d%%", int(r.value(m)*100+0.5))
 	case show.DMXOut:
-		st, ok := r.played.Outs[m.ID]
-		switch {
-		case m.Out.Device == "":
-			return "Sends nowhere"
-		case !ok || st.Status == dmx.Disconnected:
-			return "Not connected"
-		case st.Status == dmx.Failed:
-			return st.Err
-		case st.Status == dmx.Connecting:
-			return "Connecting…"
-		}
-		return st.Info.Label()
+		says, _ := outSays(m, r.played)
+		return says
+	case show.Board:
+		st := r.played.Boards[m.ID]
+		return countOf(len(st.Picked), "light") + " picked, " + countOf(len(st.Held), "channel") + " held"
 	case show.StageView:
 		return "On the Stage tab"
 	case show.AudioIn:
