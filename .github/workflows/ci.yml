@@ -1,9 +1,23 @@
 name: CI
 
+# Keep this fast: a whole run should take about a minute. Before adding a
+# step, look at what the slowest job spends its time on, and cache what
+# does not change from run to run. The timeouts below are set low on
+# purpose, so that a pipeline grown slow fails where it can be seen.
+
 on:
   push:
     branches: [main]
   pull_request:
+
+# A newer push to a pull request replaces the run before it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GO_VERSION: "1.27.1"
+  GOLANGCI_LINT_VERSION: v2.13.2
 
 jobs:
   test:
@@ -13,12 +27,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.27.1"
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.sum
       - name: Vet
         run: go vet ./...
@@ -38,16 +52,49 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.27.1"
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.sum
-      - uses: golangci/golangci-lint-action@v8
+      # golangci-lint is built with this Go, as a released binary built
+      # with an older one will not read the module. Building it takes
+      # most of a minute, so the binary is kept from run to run, by its
+      # version and Go's.
+      - name: Keep golangci-lint
+        id: golangci
+        uses: actions/cache@v4
         with:
-          version: v2.13.2
-          install-mode: goinstall
-      - name: Lint for Windows
-        run: GOOS=windows "$(go env GOPATH)/bin/golangci-lint" run ./...
+          path: ~/go/bin/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ env.GOLANGCI_LINT_VERSION }}-go${{ env.GO_VERSION }}
+      - name: Build golangci-lint
+        if: steps.golangci.outputs.cache-hit != 'true'
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${{ env.GOLANGCI_LINT_VERSION }}
+      # What it found out about each package last time, for Linux and for
+      # Windows. A key cannot be saved twice, so it is saved by run and
+      # read back from the latest.
+      - name: Keep what golangci-lint knows
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-lint-cache-${{ runner.os }}-${{ hashFiles('go.sum', '.golangci.yml') }}-${{ github.run_id }}
+          restore-keys: |
+            golangci-lint-cache-${{ runner.os }}-${{ hashFiles('go.sum', '.golangci.yml') }}-
+            golangci-lint-cache-${{ runner.os }}-
+      # For Linux and for Windows side by side: each fails the job.
+      - name: Lint, for Linux and for Windows
+        run: |
+          lint="$(go env GOPATH)/bin/golangci-lint"
+          "$lint" config verify
+          "$lint" run --allow-parallel-runners ./... > linux.txt 2>&1 &
+          linux=$!
+          GOOS=windows "$lint" run --allow-parallel-runners ./... > windows.txt 2>&1 &
+          windows=$!
+          failed=0
+          wait $linux || failed=1
+          wait $windows || failed=1
+          echo "::group::Linux"; cat linux.txt; echo "::endgroup::"
+          echo "::group::Windows"; cat windows.txt; echo "::endgroup::"
+          exit $failed
