@@ -22,7 +22,7 @@ import (
 // stage glows as the engine plays, and a fader dragged on the Faders tab
 // asks to set its value.
 func TestAWindowShowsTheShowAndItsFadersPlay(t *testing.T) {
-	w := gunimtest.New(t, geom.Sz(1280, 800), nil)
+	w := testWindow(t, geom.Sz(1280, 800))
 	Register(w, 0)
 	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
 	c := w.Client()
@@ -83,6 +83,15 @@ func TestAWindowShowsTheShowAndItsFadersPlay(t *testing.T) {
 	}
 }
 
+// testWindow is an offscreen window that paints every frame, as these
+// tests ask the UI where its nodes were drawn.
+func testWindow(t *testing.T, size geom.Size) *gunim.Window {
+	t.Helper()
+	w := gunimtest.New(t, size, nil)
+	w.PaintWhenLooked(false)
+	return w
+}
+
 // uiCall runs on the window's UI goroutine with the frame.
 type uiCall func(f *frame, u *gunim.UI)
 
@@ -117,7 +126,7 @@ func frameUI(t *testing.T, w *gunim.Window) *gunim.UI {
 // TestLeavingAShowNotSavedAsksFirst: Ctrl+N asks, and only the answer
 // to leave it asks the application for a new show.
 func TestLeavingAShowNotSavedAsksFirst(t *testing.T) {
-	w := gunimtest.New(t, geom.Sz(1000, 700), nil)
+	w := testWindow(t, geom.Sz(1000, 700))
 	Register(w, 0)
 	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
 	c := w.Client()
@@ -162,7 +171,7 @@ func TestTheBeatModulesShowTheirBeat(t *testing.T) {
 		return m.ID
 	}
 	in, bt, tp, pl := add(show.AudioIn, geom.Pt(300, 260)), add(show.Beat, geom.Pt(300, 380)), add(show.Tempo, geom.Pt(560, 300)), add(show.Pulse, geom.Pt(560, 460))
-	w := gunimtest.New(t, geom.Sz(1280, 800), nil)
+	w := testWindow(t, geom.Sz(1280, 800))
 	Register(w, 0)
 	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
 	c := w.Client()
@@ -230,7 +239,7 @@ func TestThePlayerTabListsTheSongsAndPlaysOneDoubleClicked(t *testing.T) {
 	}
 	s.Songs[1].BPM = 100
 	s.Layout.Show(show.TabPlayer)
-	w := gunimtest.New(t, geom.Sz(1280, 800), nil)
+	w := testWindow(t, geom.Sz(1280, 800))
 	Register(w, 0)
 	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
 	c := w.Client()
@@ -317,7 +326,7 @@ func TestTheControllersTabShowsEachControllerAndLearns(t *testing.T) {
 			Controls: []show.Control{{ID: "c1", Name: "Control 7", Kind: show.Slider, CC: 7, Note: -1}}},
 		show.Module{ID: out, Kind: show.MIDIOut, Name: "To the synth", Device: "Gone", Channel: 3, Note: 60, CC: 1})
 	s.Layout.Show(show.TabMIDI)
-	w := gunimtest.New(t, geom.Sz(1280, 800), nil)
+	w := testWindow(t, geom.Sz(1280, 800))
 	Register(w, 0)
 	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
 	c := w.Client()
@@ -378,7 +387,7 @@ func TestTheLivePageHoldsBlackoutWhileItIsHeld(t *testing.T) {
 	s.Modules = append(s.Modules, show.Module{ID: look, Kind: show.Look, Name: "Warm", Lights: []string{s.Rig.Lights[0].ID}})
 	s.Layout.Show(show.TabLive)
 	s.Layout.Show(show.TabWatch)
-	w := gunimtest.New(t, geom.Sz(1280, 800), nil)
+	w := testWindow(t, geom.Sz(1280, 800))
 	Register(w, 0)
 	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
 	c := w.Client()
@@ -446,7 +455,7 @@ func TestARoutesCardListsItsRoutesAndTurnsThemOff(t *testing.T) {
 			Output: routing.Output{Kind: routing.ToTimer, Command: routing.TimerStart}},
 	}})
 	s.Layout.Show(show.TabMIDI)
-	w := gunimtest.New(t, geom.Sz(1280, 800), nil)
+	w := testWindow(t, geom.Sz(1280, 800))
 	Register(w, 0)
 	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
 	c := w.Client()
@@ -492,7 +501,7 @@ func TestThePatternEditorDrawsAClipAndTriesThePattern(t *testing.T) {
 	light := s.Rig.Lights[0].ID
 	s.Patterns = []pattern.Pattern{{ID: "p", Name: "Chase", Bars: 1, Lanes: []pattern.Lane{{ID: "l", FixtureID: light}}}}
 	s.Layout.Show(show.TabDraw)
-	w := gunimtest.New(t, geom.Sz(1600, 900), nil)
+	w := testWindow(t, geom.Sz(1600, 900))
 	Register(w, 0)
 	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
 	c := w.Client()

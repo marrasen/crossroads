@@ -4,8 +4,8 @@ go 1.27.1
 
 require (
 	github.com/grandcat/zeroconf v1.0.0
-	github.com/marrasen/gunim v0.0.0-20261018152124-0734f7cd1f84
-	github.com/marrasen/gunim-dmx v0.0.0-20261018082215-5558e871c6a5
+	github.com/marrasen/gunim v0.0.0-20261114091331-c7135090ebe5
+	github.com/marrasen/gunim-dmx v0.0.0-20261018150839-750404a99f76
 	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.49.0
 )
@@ -20,7 +20,7 @@ require (
 	github.com/jfreymuth/oggvorbis v1.0.5 // indirect
 	github.com/jfreymuth/pulse v0.1.3 // indirect
 	github.com/jfreymuth/vorbis v1.0.2 // indirect
-	github.com/marrasen/oto/v3 v3.5.1-gunim.5 // indirect
+	github.com/marrasen/oto/v3 v3.5.1-gunim.6 // indirect
 	github.com/mewkiz/flac v1.0.14 // indirect
 	github.com/mewkiz/pkg v0.0.0-20250417130911-3f050ff8c56d // indirect
 	github.com/mewpkg/term v0.0.0-20241026122259-37a80af23985 // indirect
