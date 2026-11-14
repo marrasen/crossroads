@@ -339,6 +339,14 @@ type Engine struct {
 	boards   map[string]*board
 	recorded []Recorded
 	made     []Made
+	// remotes are the Controllers that play a Board, by module; masters
+	// the grand masters they set that the show does not hold yet, and
+	// shown each Mixer's own as the show last set has it, by module; and
+	// mastered those grand masters, for the application to keep.
+	remotes  map[string]*remote
+	masters  map[string]*master
+	shown    map[string]float64
+	mastered []Master
 	// audition is the pattern the editor plays while its test button
 	// is held, audLayer its light, and audBeats the beat it counts
 	// where the show has no Tempo.
@@ -382,7 +390,8 @@ func New(changed func()) *Engine {
 		steppers: map[string]*stepper{}, held: map[portKey]bool{}, frozen: map[string]dmx.Universe{}, layerOf: map[*mix.Layer]string{},
 		clockIns: map[string]*clockIn{}, clockOuts: map[string]*clockOut{}, sync: syncs{deck: -1},
 		timers: map[string]*timer{}, patterns: map[string]pattern.Pattern{}, hub: newHub(), routers: map[string]*router{},
-		effects: map[string]*fxRunner{}, programs: map[string]fx.Program{}, boards: map[string]*board{}, audLayer: mix.NewLayer()}
+		effects: map[string]*fxRunner{}, programs: map[string]fx.Program{}, boards: map[string]*board{}, audLayer: mix.NewLayer(),
+		remotes: map[string]*remote{}, masters: map[string]*master{}, shown: map[string]float64{}}
 }
 
 // Set runs show s from now on: its modules in its wires' order, with a
@@ -391,6 +400,7 @@ func (e *Engine) Set(s show.Show) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.s = s.Clone()
+	e.keepMasters()
 	e.order = order(&e.s)
 	cat := e.s.Catalog()
 	e.dims = [dmx.Channels]bool{}
@@ -468,10 +478,12 @@ func (e *Engine) Set(s show.Show) {
 					fired: map[string]bool{}, sent: map[string]int{}}
 				e.desks[m.ID] = d
 			}
-			// Another device: its lights and its sliders start afresh.
+			// Another device: its lights, its sliders and its buttons start
+			// afresh.
 			d.device, d.standard, d.switched = m.Device, false, false
 			clear(d.sent)
 			clear(d.caught)
+			clear(d.held)
 		case show.MIDIOut:
 			if sd := e.senders[m.ID]; sd != nil && sd.device == m.Device {
 				continue
@@ -581,6 +593,7 @@ func (e *Engine) Set(s show.Show) {
 		}
 	}
 	e.keepBoards(cat)
+	e.keepRemotes()
 	e.hub.want(&e.s)
 	for id, co := range e.clockOuts {
 		if m := e.s.Module(id); m == nil || m.Kind != show.ClockOut {
@@ -682,7 +695,8 @@ func (e *Engine) open(o show.Output) *out {
 	return ob
 }
 
-// order is the modules of s, each after every module that feeds it.
+// order is the modules of s, each after every module that feeds it,
+// and a Board after the controller it is played from.
 func order(s *show.Show) []string {
 	var out []string
 	done := map[string]bool{}
@@ -697,6 +711,11 @@ func order(s *show.Show) []string {
 			if w.To.Module == id && !back(s, w.To) {
 				visit(w.From.Module)
 			}
+		}
+		if m := s.Module(id); m != nil && m.Kind == show.Board && m.PlayedFrom != "" {
+			// After the controller it is played from, so what that heard
+			// plays in the same tick.
+			visit(m.PlayedFrom)
 		}
 		busy[id] = false
 		done[id] = true
@@ -884,6 +903,8 @@ func (e *Engine) Tick() Live {
 			}
 		}
 	}
+	e.lightRemotes(now)
+	e.settleMasters(now)
 	e.boardsPlay(&live)
 	live.Playing = Playing{Song: e.song, Pos: e.state.Pos, Len: e.state.Len, Playing: e.state.Playing, Err: e.deckErr}
 	live.Log = slices.Clone(e.log)

@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/marrasen/crossroads/app"
+	"github.com/marrasen/crossroads/controller"
 	"github.com/marrasen/crossroads/engine"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim"
@@ -60,7 +61,8 @@ func (t *boardTab) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids gu
 // the rig and each group, to pick with; a fader for each channel of
 // what is picked, and Clear; the grand master, Blackout and Flash of
 // the mixer the Board is wired into; and the DMX out that mixer feeds.
-// A show with no Board offers to add one.
+// Along the top, the controller it is played from, or the offer to add
+// an X-Touch Mini. A show with no Board offers to add one.
 type boardPage struct {
 	st     *app.State
 	played engine.Live
@@ -84,6 +86,16 @@ type boardPage struct {
 	record *widget.Button
 	fade   *widget.Slider
 	scenes [show.Pads]scenePad
+	// from picks the controller the Board is played from, of remotes,
+	// "" first for none; addTouch adds an X-Touch Mini, offered while
+	// the show has none; and fromY is where their row stands. names are
+	// what the picker offers.
+	from     *widget.Dropdown
+	remotes  []string
+	names    []string
+	addTouch *widget.Button
+	hasTouch bool
+	fromY    float32
 	// The chases' controls, and a button for each chase, in order;
 	// making is the place of the one being made. clocked says a clock
 	// is wired into the Board.
@@ -174,6 +186,17 @@ func newBoardPage() *boardPage {
 	b.fade.OnCommit = func(v float32, _ *gunim.UI) gunim.Intent {
 		return app.SetSceneFade{Module: b.board, Seconds: float64(v)}
 	}
+	b.from = widget.NewDropdown(nil)
+	b.from.OnChange = func(i int, _ *gunim.UI) gunim.Intent {
+		if i < 0 || i >= len(b.remotes) {
+			return nil
+		}
+		return app.PlayFrom{Module: b.board, Controller: b.remotes[i]}
+	}
+	b.addTouch = widget.NewButton("Add an X-Touch Mini")
+	b.addTouch.Icon = icon.Plus
+	b.addTouch.Tooltip = "Adds a Behringer X-Touch Mini on its MIDI port, which then plays the board: its knobs set the channels, its top row presses the pads"
+	b.addTouch.OnClick = func(*gunim.UI) gunim.Intent { return app.AddXTouchMini{Module: b.board} }
 	b.newChaseControls()
 	return b
 }
@@ -285,6 +308,7 @@ func (b *boardPage) show(st *app.State, u *gunim.UI) {
 		b.fade.SetValue(float32(m.SceneFade), u)
 	}
 	b.showChases(s, s.Module(b.board), u)
+	b.showRemotes(s, u)
 	b.pads = b.pads[:0]
 	for _, p := range s.Rig.Lights {
 		b.pads = append(b.pads, lightPad{label: p.Name, lights: []string{p.ID}})
@@ -428,6 +452,10 @@ func (b *boardPage) keep(u *gunim.UI) {
 	case "":
 		want = append(want, b.add)
 	default:
+		want = append(want, b.from)
+		if !b.hasTouch {
+			want = append(want, b.addTouch)
+		}
 		want = append(want, b.record, b.fade)
 		want = append(want, b.chaseKids()...)
 		want = append(want, b.clear)
@@ -544,6 +572,7 @@ func (b *boardPage) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Childr
 		right -= masterW + boardSide
 	}
 	y := float32(boardSide)
+	y = b.layRemote(y, full, lay)
 	b.scenesY = y
 	rs := lay(b.record, gunim.Constraints{Max: geom.Sz(160, buttonH)})
 	b.placed[b.record] = geom.Rc(full-rs.W, y-4, rs.W, rs.H)
@@ -667,6 +696,7 @@ func (b *boardPage) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids g
 	cat := s.Catalog()
 	st := b.played.Boards[b.board]
 	accent := widget.Accent.Get(th)
+	b.paintRemote(p, f, box, &st)
 	b.paintScenes(p, f, &st)
 	b.paintChases(p, f, &st)
 	h := bold.Shape("Lights", 12)
@@ -709,12 +739,18 @@ func (b *boardPage) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids g
 		at := b.area.Center()
 		msg.PaintFaded(p, geom.Pt(max(at.X-msg.Advance/2, b.area.Min.X), at.Y-6), quiet, b.area.Size().W, fade)
 	}
-	for _, bf := range b.faders {
+	for i, bf := range b.faders {
 		r, ok := b.placed[bf.s]
 		if !ok {
 			continue
 		}
 		cell := b.per
+		if b.held(&st, i) {
+			// One of the eight the controller's knobs set.
+			mark := geom.Rc(r.Center().X-cell/2+2, r.Min.Y-stripName, cell-4, r.Size().H+stripName+stripNumber)
+			p.RRect(mark, 8, paint.Solid(faded(midiInk.Get(th), 0.12)))
+			p.RRect(geom.Rc(mark.Min.X+6, mark.Min.Y, mark.Size().W-12, 2), 1, paint.Solid(midiInk.Get(th)))
+		}
 		c := ink
 		if cc, ok := channelColour(bf.Role); ok {
 			// Its colour, brought toward the ink to read on the card.
@@ -792,6 +828,10 @@ func (b *boardPage) paintScenes(p *paint.Painter, f gunim.Frame, st *engine.Boar
 		}
 		if on {
 			p.RRect(geom.Rc(r.Min.X, r.Min.Y, 4, r.Size().H), 2, paint.Solid(accent))
+		}
+		if b.held(st, i) {
+			// One of the eight the controller's top row presses.
+			p.RRect(geom.Rc(r.Min.X+10, r.Min.Y+3, max(r.Size().W-40, 8), 3), 1.5, paint.Solid(midiInk.Get(th)))
 		}
 		switch {
 		case st.Record:
@@ -970,4 +1010,101 @@ func countOf(n int, thing string) string {
 		return "1 " + thing
 	}
 	return strconv.Itoa(n) + " " + thing + "s"
+}
+
+// pageSize is how many channel faders, and how many pads, a page of
+// the controller that plays the Board holds.
+const pageSize = 8
+
+// held reports whether the controller that plays the Board, as st
+// says, holds channel fader, or pad, i, from 0: one of the eight of the
+// page it is on.
+func (b *boardPage) held(st *engine.BoardState, i int) bool {
+	return st.Remote != "" && i/pageSize == st.Page
+}
+
+// showRemotes follows the controllers that can play the Board: the
+// picker offers None and them, by name, and picks the one the Board
+// is played from; Add an X-Touch Mini is offered while the show has no
+// controller of its layout.
+func (b *boardPage) showRemotes(s *show.Show, u *gunim.UI) {
+	b.remotes = []string{""}
+	names := []string{"None"}
+	b.hasTouch = false
+	for i := range s.Modules {
+		m := &s.Modules[i]
+		if m.Kind != show.Controller {
+			continue
+		}
+		b.hasTouch = b.hasTouch || m.Layout == controller.XTouchMiniID
+		if controller.PlaysBoard(m) {
+			b.remotes = append(b.remotes, m.ID)
+			names = append(names, m.Name)
+		}
+	}
+	if !slices.Equal(names, b.names) {
+		// Not set afresh as it stands, so an open list stays open.
+		b.names = names
+		b.from.SetItems(widget.Labels(names...))
+	}
+	at := 0
+	if m := s.Module(b.board); m != nil {
+		at = max(slices.Index(b.remotes, m.PlayedFrom), 0)
+	}
+	b.from.SetSelected(at, u)
+}
+
+// The controller's row's measures: the words before the picker, and
+// the picker at its widest.
+const (
+	fromW   = 84
+	remoteW = 200
+)
+
+// layRemote lays out, from y down, full wide, the row of the controller
+// the Board is played from: the picker, after its words, and Add an
+// X-Touch Mini. It returns where the row ends.
+func (b *boardPage) layRemote(y, full float32, lay func(gunim.Node, gunim.Constraints) geom.Size) float32 {
+	b.fromY = y
+	x := float32(boardSide + fromW)
+	fs := lay(b.from, gunim.Constraints{Max: geom.Sz(min(remoteW, max(full-x, 80)), buttonH)})
+	b.placed[b.from] = geom.Rc(x, y-4+(buttonH-fs.H)/2, fs.W, fs.H)
+	x += fs.W + 12
+	if !b.hasTouch {
+		as := lay(b.addTouch, gunim.Constraints{Max: geom.Sz(max(full-x, 80), buttonH)})
+		b.placed[b.addTouch] = geom.Rc(x, y-4, as.W, as.H)
+	}
+	return y + buttonH + 6
+}
+
+// paintRemote paints the words before the controller picker, and, while
+// a controller plays the Board, the page it is on, in the colour of the
+// marks on the faders and pads it holds, and how its port stands.
+func (b *boardPage) paintRemote(p *paint.Painter, f gunim.Frame, box geom.Size, st *engine.BoardState) {
+	th := f.Theme
+	ink := widget.Ink.Get(th)
+	quiet := faded(ink, 0.55)
+	face, bold := widget.Font.Get(th), widget.BoldFont.Get(th)
+	fade := widget.TextFade.Get(th)
+	h := face.Shape("Played from", 12)
+	h.Paint(p, geom.Pt(boardSide, b.fromY+4), quiet)
+	if st.Remote == "" {
+		return
+	}
+	x := b.placed[b.from].Max.X + 12
+	if !b.hasTouch {
+		x = b.placed[b.addTouch].Max.X + 12
+	}
+	first := st.Page*pageSize + 1
+	t := bold.Shape("Page "+strconv.Itoa(st.Page+1)+" · "+strconv.Itoa(first)+"–"+strconv.Itoa(first+pageSize-1), 12)
+	room := max(box.W-boardSide-x, 0)
+	t.PaintFaded(p, geom.Pt(x, b.fromY+4), midiInk.Get(th), room, fade)
+	says := b.played.Desks[st.Remote].Says
+	if m := b.st.Show.Module(st.Remote); m != nil && m.Device == "" {
+		says = "No MIDI port: pick it on the Controllers tab"
+	}
+	if x += t.Advance + 10; says != "" && x < box.W-boardSide {
+		s := face.Shape(says, 11)
+		s.PaintFaded(p, geom.Pt(x, b.fromY+5), quiet, box.W-boardSide-x, fade)
+	}
 }

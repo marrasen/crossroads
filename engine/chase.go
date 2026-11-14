@@ -293,6 +293,7 @@ func (b *board) start(m *show.Module, c show.Chase) {
 // can play, fading from what it plays now, whole or part way through a
 // fade.
 func (b *board) stepOn(m *show.Module, c show.Chase) {
+	b.took++
 	next := b.next(m, c, b.at)
 	b.was, b.fading, b.faded = b.cur, b.at >= 0 && next >= 0, 0
 	b.at = next

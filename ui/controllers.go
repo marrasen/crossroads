@@ -163,6 +163,27 @@ func deskSays(d engine.Desk) string {
 	return says
 }
 
+// controllerSays is what Controller module m's card in show s says
+// under its name: as [deskSays] has it, or, with no port picked, that
+// it wants one; led by the Board it plays, where it plays one.
+func controllerSays(s *show.Show, m *show.Module, d engine.Desk) string {
+	says := deskSays(d)
+	if m.Device == "" {
+		says = "No MIDI port: plug it in, then pick its port"
+	}
+	for _, b := range s.Modules {
+		if b.Kind != show.Board || b.PlayedFrom != m.ID {
+			continue
+		}
+		name := "the Board"
+		if b.Name != show.Board.Title() {
+			name = "the board " + b.Name
+		}
+		return "Plays " + name + " · " + says
+	}
+	return says
+}
+
 // routeRowH is how tall a route's row is.
 const routeRowH = 40
 
@@ -519,7 +540,7 @@ func (l *cardList) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids gu
 		}
 		says := l.c.played.Says[id]
 		if m.Kind == show.Controller {
-			says = deskSays(l.c.played.Desks[id])
+			says = controllerSays(&st.Show, m, l.c.played.Desks[id])
 		}
 		if says != "" {
 			s := face.Shape(says, 11)

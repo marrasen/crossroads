@@ -6,13 +6,16 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/marrasen/crossroads/controller"
 	"github.com/marrasen/crossroads/engine"
 	"github.com/marrasen/crossroads/pattern"
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim-dmx/enttec"
+	"github.com/marrasen/gunim/audio/midi"
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/widget/dock"
 	"github.com/marrasen/gunim/widget/graph"
@@ -790,5 +793,190 @@ func TestChasesComeBackWithTheShow(t *testing.T) {
 	}
 	if st := a.eng.Tick().Boards[b]; st.Chase != 0 || st.Last != 0 {
 		t.Errorf("opened again, the board shows %+v", st)
+	}
+}
+
+// TestAddingAnXTouchMiniPlaysTheBoardFromItsPort: it goes on the first
+// port whose name starts with X-TOUCH MINI, in any case, with its
+// layout, and the Board is played from it; asked again, nothing more is
+// added. With no such port, it is added on none.
+func TestAddingAnXTouchMiniPlaysTheBoardFromItsPort(t *testing.T) {
+	for _, c := range []struct {
+		ports []string
+		want  string
+	}{
+		{[]string{"Synth", "x-touch mini 1:0", "X-TOUCH MINI 2"}, "x-touch mini 1:0"},
+		{[]string{"Synth", "My X-TOUCH MINI"}, ""},
+		{nil, ""},
+	} {
+		a := NewApp(show.Start(), "", nil)
+		a.MIDIIns = func() ([]string, error) { return c.ports, nil }
+		b := named(t, a, "Board").ID
+		a.Handle(0, AddXTouchMini{Module: b})
+		ctl := named(t, a, "X-Touch Mini")
+		if ctl.Kind != show.Controller || ctl.Layout != controller.XTouchMiniID || ctl.Device != c.want {
+			t.Errorf("with the ports %q, the controller added is %+v", c.ports, ctl)
+		}
+		if named(t, a, "Board").PlayedFrom != ctl.ID || !a.st.Unsaved {
+			t.Errorf("with the ports %q, the board is played from %q", c.ports, named(t, a, "Board").PlayedFrom)
+		}
+		n := len(a.st.Show.Modules)
+		a.st.Unsaved = false
+		a.Handle(0, AddXTouchMini{Module: b})
+		if len(a.st.Show.Modules) != n || a.st.Unsaved {
+			t.Errorf("asked again, the show has %d modules, not %d", len(a.st.Show.Modules), n)
+		}
+	}
+	a := NewApp(show.Start(), "", nil)
+	a.MIDIIns = func() ([]string, error) { return nil, errors.New("no MIDI here") }
+	a.Handle(0, AddXTouchMini{Module: named(t, a, "Mixer").ID})
+	if len(a.st.Show.Modules) != len(show.Start().Modules) {
+		t.Error("asked for a module that is no Board, a controller was added")
+	}
+}
+
+// TestABoardIsPlayedFromOneControllerThatHasTheControls: one of
+// learned controls is refused; a second Board played from the same
+// controller takes it from the first; the same again changes nothing;
+// and the controller removed, or given learned controls, plays none.
+func TestABoardIsPlayedFromOneControllerThatHasTheControls(t *testing.T) {
+	s := show.Start()
+	touch, learned, second := s.NewID("m"), s.NewID("m"), s.NewID("m")
+	s.Modules = append(s.Modules,
+		show.Module{ID: touch, Kind: show.Controller, Name: "Touch", Layout: controller.XTouchMiniID},
+		show.Module{ID: learned, Kind: show.Controller, Name: "Learned"},
+		show.Module{ID: second, Kind: show.Board, Name: "Second"})
+	a := NewApp(s, "", nil)
+	b := named(t, a, "Board").ID
+	a.Handle(0, PlayFrom{Module: b, Controller: learned})
+	a.Handle(0, PlayFrom{Module: named(t, a, "Mixer").ID, Controller: touch})
+	if a.st.Unsaved || named(t, a, "Mixer").PlayedFrom != "" {
+		t.Fatal("a board played from a controller of learned controls, or a mixer from one, changed the show")
+	}
+	a.Handle(0, PlayFrom{Module: b, Controller: touch})
+	if named(t, a, "Board").PlayedFrom != touch || !a.st.Unsaved {
+		t.Fatal("the board is not played from the X-Touch Mini")
+	}
+	if st := a.eng.Tick().Boards[b]; st.Remote != touch {
+		t.Errorf("the engine plays the board from %q", st.Remote)
+	}
+	a.st.Unsaved = false
+	a.Handle(0, PlayFrom{Module: b, Controller: touch})
+	if a.st.Unsaved {
+		t.Error("played from the controller it is played from, the show changed")
+	}
+	a.Handle(0, PlayFrom{Module: second, Controller: touch})
+	if named(t, a, "Board").PlayedFrom != "" || named(t, a, "Second").PlayedFrom != touch {
+		t.Error("two boards are played from one controller")
+	}
+	a.Handle(0, SetLayout{Module: touch, Layout: ""})
+	if named(t, a, "Second").PlayedFrom != "" {
+		t.Error("its controller of learned controls now, the board is still played from it")
+	}
+	a.Handle(0, SetLayout{Module: touch, Layout: controller.XTouchMiniID})
+	a.Handle(0, PlayFrom{Module: b, Controller: touch})
+	a.Handle(0, graph.Change(graph.Delete{Nodes: []string{touch}}))
+	if named(t, a, "Board").PlayedFrom != "" {
+		t.Error("its controller removed, the board is still played from it")
+	}
+	// A show file naming a controller not there, or twice, is mended.
+	s = show.Start()
+	touch = s.NewID("m")
+	s.Modules = append(s.Modules, show.Module{ID: touch, Kind: show.Controller, Layout: controller.XTouchMiniID},
+		show.Module{ID: s.NewID("m"), Kind: show.Board, Name: "Second", PlayedFrom: touch})
+	s.Module(b).PlayedFrom = touch
+	a = NewApp(s, "", nil)
+	if named(t, a, "Board").PlayedFrom != touch || named(t, a, "Second").PlayedFrom != "" {
+		t.Error("two boards opened played from one controller")
+	}
+}
+
+// fakePorts are MIDI ports a test plays: an X-Touch Mini, plugged in.
+type fakePorts struct {
+	mu sync.Mutex
+	f  func(midi.Event)
+}
+
+type fakePort struct{}
+
+func (fakePort) Err() error                         { return nil }
+func (fakePort) Close() error                       { return nil }
+func (fakePort) Send(time.Time, midi.Message) error { return nil }
+
+func (p *fakePorts) OpenIn(_ string, f func(midi.Event)) (engine.MIDIIn, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.f = f
+	return fakePort{}, nil
+}
+
+func (p *fakePorts) OpenOut(string) (engine.MIDIOut, error) { return fakePort{}, nil }
+
+// play sends m from the X-Touch Mini.
+func (p *fakePorts) play(m midi.Message) {
+	p.mu.Lock()
+	f := p.f
+	p.mu.Unlock()
+	f(midi.Event{Time: time.Now(), Message: m})
+}
+
+// TestTheBoardPlayedFromAnXTouchMiniChangesTheShowOnlyAsItKeepsIt: a
+// knob, a pad and the light after change nothing the show keeps; the
+// grand master the fader moves plays at once and is kept once it rests,
+// in one change.
+func TestTheBoardPlayedFromAnXTouchMiniChangesTheShowOnlyAsItKeepsIt(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	ports := &fakePorts{}
+	now := time.Unix(1000, 0)
+	a.eng.MIDI = ports
+	a.eng.Now = func() time.Time { return now }
+	a.MIDIIns = func() ([]string, error) { return []string{"X-TOUCH MINI"}, nil }
+	b, mixer := named(t, a, "Board").ID, named(t, a, "Mixer").ID
+	a.Handle(0, AddXTouchMini{Module: b})
+	ctl := named(t, a, "X-Touch Mini").ID
+	tick := func() engine.Live {
+		now = now.Add(time.Second / 40)
+		live := a.eng.Tick()
+		a.recorded()
+		return live
+	}
+	for i := 0; tick().Desks[ctl].Says != "X-TOUCH MINI"; i++ {
+		if i > 5000 {
+			t.Fatal("the X-Touch Mini never opened")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	a.st.Unsaved = false
+	ports.play(midi.NoteOn(0, 88, 127))
+	ports.play(midi.NoteOn(0, 88, 0))
+	ports.play(midi.Control(0, 17, 3))
+	ports.play(midi.NoteOn(0, 89, 127))
+	ports.play(midi.NoteOn(0, 89, 0))
+	if st := tick().Boards[b]; len(st.Picked) != 1 || len(st.Held) != 1 {
+		t.Errorf("the light after picked and a knob turned, the board shows %+v", st)
+	}
+	ports.play(midi.Message{Status: 0xE8, Data2: 127})
+	ports.play(midi.Message{Status: 0xE8, Data2: 32})
+	if live := tick(); live.Values[mixer] != 32.0/127 {
+		t.Errorf("the fader brought to 32, the master plays %v", live.Values[mixer])
+	}
+	for range 30 {
+		tick()
+	}
+	if a.st.Unsaved || named(t, a, "Mixer").Value != 1 {
+		t.Fatal("playing the board from the X-Touch Mini changed the show")
+	}
+	for range 20 {
+		tick()
+	}
+	if !a.st.Unsaved || named(t, a, "Mixer").Value != 32.0/127 {
+		t.Fatalf("the fader rested, the show's master is %v", named(t, a, "Mixer").Value)
+	}
+	a.st.Unsaved = false
+	for range 80 {
+		tick()
+	}
+	if live := tick(); a.st.Unsaved || live.Values[mixer] != 32.0/127 {
+		t.Errorf("kept, the show changed again, or the master plays %v", live.Values[mixer])
 	}
 }

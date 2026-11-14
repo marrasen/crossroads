@@ -114,8 +114,23 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 	clear(d.fired)
 	if e.hub.freshIn[m.Device] {
 		// Heard again: each slider takes its value over afresh, as it
-		// may have moved meanwhile.
+		// may have moved meanwhile, and so does the fader the grand
+		// master of a Board it plays.
 		clear(d.caught)
+		if rm := e.remotes[m.ID]; rm != nil {
+			rm.caught, rm.moved = false, false
+		}
+	}
+	if !e.hub.liveIn[m.Device] {
+		// Unplugged, or never there: no button is held, so nothing it
+		// holds, as a flash, sticks.
+		clear(d.held)
+	}
+	// rm is the Board the controller plays, nil for none: what it heard
+	// plays the Board too.
+	rm := e.remotes[m.ID]
+	if rm != nil {
+		rm.acts = rm.acts[:0]
 	}
 	controls := controller.ControlsOf(m)
 	l, _ := controller.Find(m.Layout)
@@ -187,12 +202,18 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 		}
 		switch c.Kind {
 		case show.Knob:
+			if rm != nil {
+				rm.acts = append(rm.acts, act{control: c.ID, ticks: ticks(byte(value))})
+			}
 			// Kept on a whole step, so that steps up and then down end
 			// where they began.
 			v := d.values[c.ID] + float64(ticks(byte(value)))*knobStep
 			d.values[c.ID] = min(max(math.Round(v/knobStep)*knobStep, 0), 1)
 		case show.Slider:
 			at := float64(value) / 127
+			if rm != nil {
+				rm.acts = append(rm.acts, act{control: c.ID, at: at})
+			}
 			if was, ok := d.values[c.ID]; ok && !d.caught[c.ID] {
 				// Soft takeover: the slider takes the value over only as
 				// it passes it, or comes near it.
@@ -208,6 +229,9 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 			down := kind == midi.KindNoteOn && value > 0
 			if down && !d.held[c.ID] {
 				d.fired[c.ID] = true
+				if rm != nil {
+					rm.acts = append(rm.acts, act{control: c.ID})
+				}
 			}
 			d.held[c.ID] = down
 		}
@@ -225,8 +249,11 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 			}
 		}
 	}
-	if out != nil {
-		e.light(m, d, controls, out, l.Mackie)
+	if rm != nil {
+		// Its lights are the Board's, sent once every module has run.
+		e.playRemote(rm)
+	} else if out != nil {
+		e.light(m, d, controls, out, l.Mackie, nil)
 	}
 	live.Desks[m.ID] = Desk{Says: e.hub.says(m.Device, true), Values: values, Last: d.last, Learn: d.learn, Standard: d.standard}
 }
@@ -234,9 +261,10 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 // light sends the controller's lights what they show, where it
 // changed, each on its control's own channel: a knob's ring its value,
 // a button's light what is wired into it, or, with nothing wired,
-// whether it is held. mackie says the controller is in Mackie Control
-// mode, whose rings fill from the left.
-func (e *Engine) light(m *show.Module, d *desk, controls []show.Control, out MIDIOut, mackie bool) {
+// whether it is held; or, for a controller that plays a Board, what
+// board says. mackie says the controller is in Mackie Control mode,
+// whose rings fill from the left.
+func (e *Engine) light(m *show.Module, d *desk, controls []show.Control, out MIDIOut, mackie bool, board *boardLights) {
 	for _, c := range controls {
 		if !c.Lit {
 			continue
@@ -245,10 +273,14 @@ func (e *Engine) light(m *show.Module, d *desk, controls []show.Control, out MID
 		var msg midi.Message
 		switch c.Kind {
 		case show.Knob, show.Slider:
-			v = int(math.Round(d.values[c.ID] * 127))
+			value := d.values[c.ID]
+			if board != nil {
+				value = board.rings[c.ID]
+			}
+			v = int(math.Round(value * 127))
 			msg = midi.Control(c.Channel, c.CC, v)
 			if mackie {
-				v = controller.Ring(d.values[c.ID])
+				v = controller.Ring(value)
 				msg = midi.Control(c.Channel, controller.RingCC(c.CC), v)
 			}
 		case show.Press:
@@ -259,6 +291,9 @@ func (e *Engine) light(m *show.Module, d *desk, controls []show.Control, out MID
 			v = controller.LightOff
 			if lit {
 				v = controller.LightOn
+			}
+			if board != nil {
+				v = board.lights[c.ID]
 			}
 			msg = midi.NoteOn(c.Channel, c.Note, v)
 		}

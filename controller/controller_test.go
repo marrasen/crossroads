@@ -112,3 +112,22 @@ func TestTheXTouchMinisControlsSendWhatTheDeviceSends(t *testing.T) {
 		t.Error("the fader does not bend, or a layer button or a ring does not light")
 	}
 }
+
+// TestTheXTouchMiniPlaysABoardAndIsFoundByItsPort: its layout has the
+// controls a Board is played with, one of learned controls has not; its
+// port is the first named X-TOUCH MINI, in any case.
+func TestTheXTouchMiniPlaysABoardAndIsFoundByItsPort(t *testing.T) {
+	if !PlaysBoard(&show.Module{Kind: show.Controller, Layout: XTouchMiniID}) {
+		t.Error("the X-Touch Mini cannot play a board")
+	}
+	learned := &show.Module{Kind: show.Controller, Controls: xTouchMini().Controls[:20]}
+	if PlaysBoard(learned) || PlaysBoard(&show.Module{Kind: show.Board, Layout: XTouchMiniID}) || PlaysBoard(nil) {
+		t.Error("a controller without the controls, or a board, plays a board")
+	}
+	if got := XTouchMiniPort([]string{"Synth", "X-Touch Mini MIDI 1", "X-TOUCH MINI"}); got != "X-Touch Mini MIDI 1" {
+		t.Errorf("the X-Touch Mini's port is %q", got)
+	}
+	if got := XTouchMiniPort([]string{"Synth", "My X-TOUCH MINI"}); got != "" {
+		t.Errorf("with none, the X-Touch Mini's port is %q", got)
+	}
+}

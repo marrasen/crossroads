@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim/audio/midi"
@@ -78,6 +79,48 @@ func xTouchMini() Layout {
 		show.Control{ID: "layerB", Name: "Layer B", Kind: show.Press, CC: -1, Note: 85, Lit: true},
 		show.Control{ID: "fader", Name: "Fader", Kind: show.Slider, Channel: 8, CC: -1, Note: -1, Bend: true})
 	return l
+}
+
+// boardControls are the controls a controller plays a Board with, by
+// ID and kind: eight knobs, each pressed too, sixteen buttons, Layer A
+// and B, and a fader.
+func boardControls() map[string]show.ControlKind {
+	want := map[string]show.ControlKind{"layerA": show.Press, "layerB": show.Press, "fader": show.Slider}
+	for i := 1; i <= 8; i++ {
+		n := strconv.Itoa(i)
+		want["knob"+n], want["push"+n] = show.Knob, show.Press
+	}
+	for i := 1; i <= 16; i++ {
+		want["button"+strconv.Itoa(i)] = show.Press
+	}
+	return want
+}
+
+// PlaysBoard reports whether Controller module m has the controls a
+// Board is played with, as the X-Touch Mini's layout has.
+func PlaysBoard(m *show.Module) bool {
+	if m == nil || m.Kind != show.Controller {
+		return false
+	}
+	want := boardControls()
+	for _, c := range ControlsOf(m) {
+		if k, ok := want[c.ID]; ok && k == c.Kind {
+			delete(want, c.ID)
+		}
+	}
+	return len(want) == 0
+}
+
+// XTouchMiniPort is the first of the MIDI ports names whose name starts
+// with "X-TOUCH MINI", in any case, as an X-Touch Mini's does; "" for
+// none.
+func XTouchMiniPort(names []string) string {
+	for _, n := range names {
+		if strings.HasPrefix(strings.ToUpper(n), "X-TOUCH MINI") {
+			return n
+		}
+	}
+	return ""
 }
 
 // Ticks is how far a knob turned, in steps, from the value it sent: 1

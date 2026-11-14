@@ -202,3 +202,42 @@ func TestABoardsChasesComeBackAsTheyWereSaved(t *testing.T) {
 		t.Errorf("mended, the chases are %+v", got)
 	}
 }
+
+// TestTheControllerABoardIsPlayedFromComesBack, and Mend has a Board
+// played from a module not there, or no Controller, played from none;
+// so does the controller removed.
+func TestTheControllerABoardIsPlayedFromComesBack(t *testing.T) {
+	s := Start()
+	ctl := s.NewID("m")
+	s.Modules = append(s.Modules, Module{ID: ctl, Kind: Controller, Name: "X-Touch Mini", Layout: "xtouch-mini"})
+	var b *Module
+	for i := range s.Modules {
+		if s.Modules[i].Kind == Board {
+			b = &s.Modules[i]
+		}
+	}
+	b.PlayedFrom = ctl
+	path := filepath.Join(t.TempDir(), "Gig.crossroads")
+	if err := s.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	back, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Module(b.ID).PlayedFrom != ctl {
+		t.Fatalf("the board came back played from %q", back.Module(b.ID).PlayedFrom)
+	}
+	for _, from := range []string{"gone", back.Modules[0].ID} {
+		c := back.Clone()
+		c.Module(b.ID).PlayedFrom = from
+		c.Mend()
+		if got := c.Module(b.ID).PlayedFrom; got != "" {
+			t.Errorf("played from %q, mended, the board is played from %q", from, got)
+		}
+	}
+	back.RemoveModule(ctl)
+	if got := back.Module(b.ID).PlayedFrom; got != "" {
+		t.Errorf("its controller removed, the board is played from %q", got)
+	}
+}
