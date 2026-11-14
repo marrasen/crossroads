@@ -1193,3 +1193,90 @@ func TestTheBoardTabIsPlayedFromAController(t *testing.T) {
 		t.Errorf("playing no board, the controller's card says %q", says)
 	}
 }
+
+// TestATabBehindAnotherFollowsTheShow: a tab once shown, then behind
+// another tab of its group, is out of the tree. The show changing then
+// must not insert under it, which panics, and the tab shows the change
+// as it comes back in front.
+func TestATabBehindAnotherFollowsTheShow(t *testing.T) {
+	s := show.Start()
+	out := ""
+	for i := range s.Modules {
+		if s.Modules[i].Kind == show.DMXOut {
+			out = s.Modules[i].ID
+		}
+	}
+	w := testWindow(t, geom.Sz(1280, 800))
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	st := app.State{Show: s}
+	if err := c.Mount(gunim.Root, View, View, st, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	// publish shows the show changed by change, and lets a tab on its
+	// way out leave.
+	publish := func(change func(s *show.Show)) {
+		t.Helper()
+		s = s.Clone()
+		change(&s)
+		st.Show = s
+		if err := c.Publish(app.ShowTopic, st); err != nil {
+			t.Fatal(err)
+		}
+		for range 30 {
+			w.Frame(time.Second / 60)
+		}
+	}
+	// Every tab made, each then behind the last of its group.
+	tabs := []string{
+		show.TabBoard, show.TabRoutes, show.TabRig, show.TabMIDI, show.TabDraw, show.TabWatch,
+		show.TabStage, show.TabFaders, show.TabPlayer, show.TabLive,
+	}
+	for _, tab := range tabs {
+		publish(func(s *show.Show) { s.Layout.Show(tab) })
+	}
+	f := frameOf(t, w)
+	for _, tab := range tabs {
+		if f.tabs[tab] == nil {
+			t.Fatalf("the %s tab was not made", tab)
+		}
+	}
+	e := engine.New(nil)
+	e.Set(s)
+	live := func() {
+		t.Helper()
+		if err := c.Patch(app.LiveTopic, e.Tick()); err != nil {
+			t.Fatal(err)
+		}
+		w.Frame(time.Second / 60)
+	}
+
+	// The Board and Routes both behind the Monitor: a USB box chosen.
+	publish(func(s *show.Show) { s.Module(out).Out = show.Output{Device: "enttec"} })
+	live()
+	board := f.tabs[show.TabBoard].(*boardTab).page
+	routes := f.tabs[show.TabRoutes].(*routes)
+	if board.output.more.shown != board.output.usb || routes.outputs[out].more.shown != routes.outputs[out].usb {
+		t.Fatal("a tab behind another did not follow the output to the USB box")
+	}
+	// A light gone, which takes its faders and its pad with it.
+	publish(func(s *show.Show) { s.Rig.Lights = nil })
+	live()
+
+	// The Board in front again shows the port's list, in the tree.
+	publish(func(s *show.Show) { s.Layout.Show(show.TabBoard) })
+	u := frameUI(t, w)
+	if _, ok := u.Bounds(board.output.port); !ok {
+		t.Error("the Board in front again does not show the USB box's port")
+	}
+	// Routes, behind it, follows the output to Art-Net, and shows the
+	// address as it comes in front.
+	publish(func(s *show.Show) { s.Module(out).Out = show.Output{Device: "artnet", Universe: 2} })
+	live()
+	publish(func(s *show.Show) { s.Layout.Show(show.TabRoutes) })
+	u = frameUI(t, w)
+	if _, ok := u.Bounds(routes.outputs[out].host); !ok {
+		t.Error("Routes in front again does not show the Art-Net address")
+	}
+}
