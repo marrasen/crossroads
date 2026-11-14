@@ -943,3 +943,154 @@ func TestTheBoardTabRecordsOntoAPadAndPlaysIt(t *testing.T) {
 		t.Errorf("the menu closed, pad 6 asks %v", got)
 	}
 }
+
+// TestTheBoardTabMakesAndRunsAChase: New chase, a pad and Escape ask
+// the board to make a chase, take a step and give up; while one is
+// made the button reads Done, and Record waits not; a chase pressed
+// runs, its step's pad ringed; Tap taps as it goes down; with no clock
+// wired, the tab offers to listen to the sound card; and a chase's menu
+// renames it, takes out its last step and deletes it, the press that
+// closes it doing no more.
+func TestTheBoardTabMakesAndRunsAChase(t *testing.T) {
+	s := show.Start()
+	dome := s.Rig.Lights[0].ID
+	board := ""
+	for i := range s.Modules {
+		if s.Modules[i].Kind == show.Board {
+			board = s.Modules[i].ID
+			s.Modules[i].SetScene(show.Scene{Pad: 0, Name: "Red", Values: map[string]map[int]byte{dome: {1: 255}}})
+			s.Modules[i].SetScene(show.Scene{Pad: 1, Name: "Blue", Values: map[string]map[int]byte{dome: {3: 255}}})
+			s.Modules[i].Chases = []show.Chase{{ID: 3, Name: "Round", Steps: []int{1, 0}}}
+		}
+	}
+	w := testWindow(t, geom.Sz(1280, 800))
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: s}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	e := engine.New(nil)
+	defer e.Close()
+	e.Set(s)
+	tick := func() {
+		if err := c.Patch(app.LiveTopic, e.Tick()); err != nil {
+			t.Fatal(err)
+		}
+		for range 3 {
+			w.Frame(time.Second / 60)
+		}
+	}
+	tick()
+	tab, ok := frameOf(t, w).tabs[show.TabBoard].(*boardTab)
+	if !ok {
+		t.Fatal("no Board tab in front")
+	}
+	b := tab.page
+	if len(b.chases) != 1 || b.chases[0].id != 3 || b.chases[0].name != "Round" {
+		t.Fatalf("the tab shows the chases %+v", b.chases)
+	}
+	ui := frameUI(t, w)
+	at, _ := ui.Bounds(b)
+	sent := func() []gunim.Intent {
+		w.Frame(time.Second / 60)
+		var got []gunim.Intent
+		for len(c.Intents()) > 0 {
+			got = append(got, (<-c.Intents()).Intent)
+		}
+		return got
+	}
+	press := func(p geom.Point, button input.Button) []gunim.Intent {
+		w.Input(input.PointerMove{Pos: p})
+		w.Input(input.PointerDown{Pos: p, Button: button, Clicks: 1})
+		w.Input(input.PointerUp{Pos: p, Button: button})
+		return sent()
+	}
+	middle := func(n gunim.Node) geom.Point {
+		t.Helper()
+		r, ok := ui.Bounds(n)
+		if !ok {
+			t.Fatalf("%T is not drawn", n)
+		}
+		return r.Center()
+	}
+	if got := press(middle(b.newChase), input.ButtonPrimary); len(got) != 1 || got[0] != (app.NewChase{Module: board}) {
+		t.Fatalf("New chase asks %v", got)
+	}
+	e.NewChase(board)
+	tick()
+	if b.newChase.Label != "Done" || !b.record.Disabled {
+		t.Errorf("making a chase, the button reads %q and Record is disabled %v", b.newChase.Label, b.record.Disabled)
+	}
+	if got := press(at.Min.Add(b.scenes[1].r.Center()), input.ButtonPrimary); len(got) != 1 || got[0] != (app.PressPad{Module: board, Pad: 1}) {
+		t.Errorf("a pad, while a chase is made, asks %v", got)
+	}
+	w.Input(input.KeyPress{Key: input.KeyEscape})
+	if got := sent(); len(got) != 1 || got[0] != (app.GiveUpChase{Module: board}) {
+		t.Errorf("Escape, while a chase is made, asks %v", got)
+	}
+	if got := press(middle(b.newChase), input.ButtonPrimary); len(got) != 1 || got[0] != (app.DoneChase{Module: board}) {
+		t.Errorf("Done asks %v", got)
+	}
+	e.GiveUpChase(board)
+	tick()
+	if got := press(at.Min.Add(b.chases[0].r.Center()), input.ButtonPrimary); len(got) != 1 || got[0] != (app.PressChase{Module: board, Chase: 3}) {
+		t.Fatalf("the chase pressed asks %v", got)
+	}
+	e.PressChase(board, 3)
+	tick()
+	if st := b.played.Boards[board]; b.stepPad(&st) != 1 || b.newChase.Label != "New chase" {
+		t.Errorf("the chase run is at pad %d", b.stepPad(&st))
+	}
+	tp := middle(b.tap)
+	w.Input(input.PointerMove{Pos: tp})
+	w.Input(input.PointerDown{Pos: tp, Button: input.ButtonPrimary, Clicks: 1})
+	if got := sent(); len(got) != 1 || got[0] != (app.TapChase{Module: board}) {
+		t.Errorf("Tap going down asks %v", got)
+	}
+	w.Input(input.PointerUp{Pos: tp, Button: input.ButtonPrimary})
+	if got := sent(); len(got) != 0 {
+		t.Errorf("Tap coming up asks %v", got)
+	}
+	if got := press(middle(b.listen), input.ButtonPrimary); len(got) != 1 || got[0] != (app.ListenForBeat{Module: board}) {
+		t.Errorf("Listen to the sound card asks %v", got)
+	}
+	// The chase's menu: Rename, Remove the last step, Delete.
+	chase := at.Min.Add(b.chases[0].r.Center())
+	pick := func(item int) []gunim.Intent {
+		for range 30 {
+			w.Frame(time.Second / 60)
+		}
+		_ = press(chase, input.ButtonSecondary)
+		for range item + 1 {
+			w.Input(input.KeyPress{Key: input.KeyDown})
+		}
+		w.Input(input.KeyPress{Key: input.KeyEnter})
+		return sent()
+	}
+	_ = pick(0)
+	for range 10 {
+		w.Frame(time.Second / 60)
+	}
+	w.Input(input.TextInput{Text: "Up and down"})
+	w.Input(input.KeyPress{Key: input.KeyEnter})
+	if got := sent(); len(got) != 1 || got[0] != (app.RenameChase{Module: board, Chase: 3, Name: "Up and down"}) {
+		t.Errorf("Rename from the chase's menu asks %v", got)
+	}
+	if got := pick(1); len(got) != 1 || got[0] != (app.RemoveStep{Module: board, Chase: 3}) {
+		t.Errorf("Remove the last step asks %v", got)
+	}
+	if got := pick(2); len(got) != 1 || got[0] != (app.DeleteChase{Module: board, Chase: 3}) {
+		t.Errorf("Delete from the chase's menu asks %v", got)
+	}
+	for range 10 {
+		w.Frame(time.Second / 60)
+	}
+	_ = press(chase, input.ButtonSecondary)
+	if !b.menu.Focusable() {
+		t.Fatal("the chase's menu did not open")
+	}
+	if got := press(chase, input.ButtonPrimary); len(got) != 0 || b.menu.Focusable() {
+		t.Errorf("a press with the menu open asks %v, and the menu is open %v", got, b.menu.Focusable())
+	}
+}

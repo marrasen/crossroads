@@ -28,7 +28,13 @@ a board, a mixer, a DMX out and the stage view, all wired up:
   they do between them. Record, then one of sixteen pads, stores what
   the board plays as a scene on that pad, and lets go of the faders; a
   pad pressed turns its scene on and off, fading over the scene fade,
-  and a right click renames or deletes it. The grand master, Blackout
+  and a right click renames or deletes it. New chase, then pads in the
+  order they should play, then Done, makes a chase of their scenes. A
+  chase's button runs it, one chase at a time, at its speed, which Tap
+  sets, fading over its share of each step; with Follow the beat, it
+  steps on the beat of the clock wired into the board, and Listen to
+  the sound card wires one in. A right click renames a chase, takes out
+  its last step, or deletes it. The grand master, Blackout
   and Flash are there, and the DMX box it all goes out on: its serial
   port, or its address and universe.
 - **Faders** is a fader for each fader module, and the grand master.

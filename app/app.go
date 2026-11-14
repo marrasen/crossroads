@@ -5,6 +5,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"log"
 	"maps"
@@ -150,6 +151,61 @@ type (
 		Module  string
 		Seconds float64
 	}
+	// NewChase has Board Module start making a chase: the pads pressed
+	// from now on are its steps, in order.
+	NewChase struct{ Module string }
+	// DoneChase ends the chase Board Module is making, which, with a
+	// step or more, the show keeps.
+	DoneChase struct{ Module string }
+	// GiveUpChase has Board Module make no chase.
+	GiveUpChase struct{ Module string }
+	// PressChase runs Board Module's chase Chase, by ID, in place of any
+	// that runs, or stops it where it runs.
+	PressChase struct {
+		Module string
+		Chase  int
+	}
+	// TapChase taps Board Module's chase: taps a steady gap apart set
+	// its speed, and each moves the chase that runs on a step.
+	TapChase struct{ Module string }
+	// RenameChase names Board Module's chase Chase Name.
+	RenameChase struct {
+		Module, Name string
+		Chase        int
+	}
+	// RemoveStep takes the last step out of Board Module's chase Chase;
+	// a chase left with none goes.
+	RemoveStep struct {
+		Module string
+		Chase  int
+	}
+	// DeleteChase takes Board Module's chase Chase out.
+	DeleteChase struct {
+		Module string
+		Chase  int
+	}
+	// SetChaseSpeed has Board Module's chase run at Speed steps a
+	// minute, 20 to 600.
+	SetChaseSpeed struct {
+		Module string
+		Speed  float64
+	}
+	// SetChaseFade has Board Module's chase spend Fade of each step,
+	// 0 to 1, fading to it.
+	SetChaseFade struct {
+		Module string
+		Fade   float64
+	}
+	// FollowBeat has Board Module's chase step on the beats of the clock
+	// wired into it, where On says, or at its own speed.
+	FollowBeat struct {
+		Module string
+		On     bool
+	}
+	// ListenForBeat has Board Module follow the beat the sound card
+	// hears: an Audio in and a Beat, wired into its clock, where nothing
+	// is wired there yet.
+	ListenForBeat struct{ Module string }
 	// Tap taps Tempo Module's beat: the beat falls on the tap, and taps
 	// a steady gap apart set its tempo, which it then plays.
 	Tap struct{ Module string }
@@ -642,6 +698,70 @@ func (a *App) Handle(win int, in gunim.Intent) {
 			return
 		}
 		m.SceneFade = secs
+	case NewChase:
+		a.eng.NewChase(in.Module)
+		return
+	case DoneChase:
+		a.eng.DoneChase(in.Module)
+		a.recorded()
+		return
+	case GiveUpChase:
+		a.eng.GiveUpChase(in.Module)
+		return
+	case PressChase:
+		a.eng.PressChase(in.Module, in.Chase)
+		return
+	case TapChase:
+		a.eng.TapChase(in.Module)
+		a.recorded()
+		return
+	case RenameChase:
+		m := boardOf(&s, in.Module)
+		name := strings.TrimSpace(in.Name)
+		if m == nil || m.Chase(in.Chase) == nil || name == "" || m.Chase(in.Chase).Name == name {
+			return
+		}
+		m.Chase(in.Chase).Name = name
+	case RemoveStep:
+		m := boardOf(&s, in.Module)
+		if m == nil || m.Chase(in.Chase) == nil {
+			return
+		}
+		c := m.Chase(in.Chase)
+		if c.Steps = c.Steps[:max(len(c.Steps)-1, 0)]; len(c.Steps) == 0 {
+			// A chase of no steps is no chase.
+			m.Chases = slices.DeleteFunc(m.Chases, func(c show.Chase) bool { return c.ID == in.Chase })
+		}
+	case DeleteChase:
+		m := boardOf(&s, in.Module)
+		if m == nil || m.Chase(in.Chase) == nil {
+			return
+		}
+		m.Chases = slices.DeleteFunc(m.Chases, func(c show.Chase) bool { return c.ID == in.Chase })
+	case SetChaseSpeed:
+		m := boardOf(&s, in.Module)
+		speed := engine.ClampSpeed(in.Speed)
+		if m == nil || engine.ClampSpeed(cmp.Or(m.Speed, show.HomeSpeed)) == speed {
+			return
+		}
+		m.Speed = speed
+	case SetChaseFade:
+		m := boardOf(&s, in.Module)
+		fade := math.Round(min(max(in.Fade, 0), 1)*100) / 100
+		if m == nil || m.Fade == fade {
+			return
+		}
+		m.Fade = fade
+	case FollowBeat:
+		m := boardOf(&s, in.Module)
+		if m == nil || m.FollowBeat == in.On {
+			return
+		}
+		m.FollowBeat = in.On
+	case ListenForBeat:
+		if !listenForBeat(&s, in.Module) {
+			return
+		}
 	case Tap:
 		m := s.Module(in.Module)
 		if m == nil || m.Kind != show.Tempo {
@@ -915,8 +1035,67 @@ func (a *App) learntFrom(got []engine.Learnt) {
 	a.setShow(s)
 }
 
-// recorded keeps the scenes the Boards recorded in the show.
-func (a *App) recorded() { a.recordedFrom(a.eng.Recorded()) }
+// recorded keeps the scenes the Boards recorded in the show, and the
+// chases they made and the speeds tapped.
+func (a *App) recorded() {
+	a.recordedFrom(a.eng.Recorded())
+	a.madeFrom(a.eng.Made())
+}
+
+// madeFrom adds each chase got to its Board, and sets each speed got as
+// its Board's chase speed.
+func (a *App) madeFrom(got []engine.Made) {
+	if len(got) == 0 {
+		return
+	}
+	s := a.st.Show.Clone()
+	changed := false
+	for _, d := range got {
+		m := boardOf(&s, d.Module)
+		switch {
+		case m == nil:
+		case d.Chase == nil:
+			changed = changed || m.Speed != d.Speed
+			m.Speed = d.Speed
+		case m.Chase(d.Chase.ID) == nil:
+			m.Chases = append(m.Chases, d.Chase.Clone())
+			changed = true
+		}
+	}
+	if changed {
+		a.setShow(s)
+	}
+}
+
+// boardOf is Board module id of s, nil where s has none of that ID or
+// it is no Board.
+func boardOf(s *show.Show, id string) *show.Module {
+	if m := s.Module(id); m != nil && m.Kind == show.Board {
+		return m
+	}
+	return nil
+}
+
+// listenForBeat has Board module board of s follow the beat the sound
+// card hears: it adds an Audio in, listening to the default input, and
+// a Beat, wires the one into the other and the Beat into the Board's
+// clock, and has its chase follow the beat. It does nothing, and
+// reports false, where a clock is wired into the Board already.
+func listenForBeat(s *show.Show, board string) bool {
+	m := boardOf(s, board)
+	if m == nil || slices.ContainsFunc(s.Wires, func(w show.Wire) bool { return w.To == show.End{Module: board, Port: "clock"} }) {
+		return false
+	}
+	m.FollowBeat = true
+	at := m.At
+	in := show.Module{ID: s.NewID("m"), Kind: show.AudioIn, Name: show.AudioIn.Title(), At: at.Add(geom.Pt(-600, 180))}
+	beat := show.Module{ID: s.NewID("m"), Kind: show.Beat, Name: show.Beat.Title(), At: at.Add(geom.Pt(-300, 180))}
+	s.Modules = append(s.Modules, in, beat)
+	s.Wires = append(s.Wires,
+		show.Wire{ID: s.NewID("w"), From: show.End{Module: in.ID, Port: "out"}, To: show.End{Module: beat.ID, Port: "in"}},
+		show.Wire{ID: s.NewID("w"), From: show.End{Module: beat.ID, Port: "out"}, To: show.End{Module: board, Port: "clock"}})
+	return true
+}
 
 // recordedFrom puts each scene got on its Board's pad, in place of the
 // scene there.

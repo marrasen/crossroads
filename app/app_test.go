@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -603,5 +604,191 @@ func TestASceneRenamedToItsNameAndAFadeSetToItsTimeChangeNothing(t *testing.T) {
 	a.Handle(0, RenameScene{Module: b, Pad: 0, Name: "Deep red"})
 	if !a.st.Unsaved || named(t, a, "Board").Scene(0).Name != "Deep red" {
 		t.Error("a scene renamed is not kept")
+	}
+}
+
+// withScenes is the start show, its Board with a scene on pads 1 and 2.
+func withScenes() show.Show {
+	s := show.Start()
+	dome := s.Rig.Lights[0].ID
+	for i := range s.Modules {
+		if s.Modules[i].Kind == show.Board {
+			s.Modules[i].SetScene(show.Scene{Pad: 0, Name: "Red", Values: map[string]map[int]byte{dome: {1: 255}}})
+			s.Modules[i].SetScene(show.Scene{Pad: 1, Name: "Blue", Values: map[string]map[int]byte{dome: {3: 255}}})
+		}
+	}
+	return s
+}
+
+// TestMakingAChasePutsItInTheShow: New chase, pads and Done keep the
+// chase on the Board module, the pads' scenes left off; given up, or
+// done with no steps, the show is as it was.
+func TestMakingAChasePutsItInTheShow(t *testing.T) {
+	a := NewApp(withScenes(), "", nil)
+	b := named(t, a, "Board").ID
+	a.Handle(0, NewChase{Module: b})
+	a.Handle(0, DoneChase{Module: b})
+	a.Handle(0, NewChase{Module: b})
+	a.Handle(0, PressPad{Module: b, Pad: 0})
+	a.Handle(0, GiveUpChase{Module: b})
+	if a.st.Unsaved || len(named(t, a, "Board").Chases) != 0 {
+		t.Fatalf("given up, the board has %+v", named(t, a, "Board").Chases)
+	}
+	a.Handle(0, NewChase{Module: b})
+	for _, pad := range []int{1, 0, 1} {
+		a.Handle(0, PressPad{Module: b, Pad: pad})
+	}
+	if live := a.eng.Tick(); len(live.Boards[b].On) != 0 || !live.Boards[b].Making {
+		t.Fatalf("making a chase, the board shows %+v", live.Boards[b])
+	}
+	a.Handle(0, DoneChase{Module: b})
+	cs := named(t, a, "Board").Chases
+	if len(cs) != 1 || cs[0].Name != "Chase 1" || !slices.Equal(cs[0].Steps, []int{1, 0, 1}) || !a.st.Unsaved {
+		t.Fatalf("done, the board has %+v", cs)
+	}
+	a.Handle(0, PressChase{Module: b, Chase: cs[0].ID})
+	if live := a.eng.Tick(); live.Boards[b].Chase != cs[0].ID || live.Stage[2] != 255 {
+		t.Errorf("the chase pressed shows %+v, blue %d", live.Boards[b], live.Stage[2])
+	}
+}
+
+// TestAChaseIsRenamedShortenedAndDeleted, the one that runs too, and a
+// chase whose last step is taken out goes; none of it reaches a module
+// that is no Board, nor marks the show changed where nothing changes.
+func TestAChaseIsRenamedShortenedAndDeleted(t *testing.T) {
+	s := withScenes()
+	for i := range s.Modules {
+		if s.Modules[i].Kind == show.Board {
+			s.Modules[i].Chases = []show.Chase{{ID: 1, Name: "Up", Steps: []int{0, 1}}, {ID: 4, Name: "Down", Steps: []int{1, 0, 1}}}
+		}
+	}
+	a := NewApp(s, "", nil)
+	b, mixer := named(t, a, "Board").ID, named(t, a, "Mixer").ID
+	a.Handle(0, RenameChase{Module: b, Chase: 1, Name: " Up "})
+	a.Handle(0, RenameChase{Module: b, Chase: 1, Name: "  "})
+	a.Handle(0, RenameChase{Module: b, Chase: 9, Name: "Gone"})
+	a.Handle(0, RenameChase{Module: mixer, Chase: 1, Name: "Mixed"})
+	a.Handle(0, RemoveStep{Module: mixer, Chase: 1})
+	a.Handle(0, DeleteChase{Module: mixer, Chase: 1})
+	if a.st.Unsaved {
+		t.Fatal("a chase renamed to its name, or asked of no Board, changed the show")
+	}
+	a.Handle(0, RenameChase{Module: b, Chase: 4, Name: " Down and up "})
+	a.Handle(0, RemoveStep{Module: b, Chase: 4})
+	if c := named(t, a, "Board").Chase(4); c == nil || c.Name != "Down and up" || !slices.Equal(c.Steps, []int{1, 0}) {
+		t.Fatalf("renamed and shortened, the chase is %+v", c)
+	}
+	a.Handle(0, RemoveStep{Module: b, Chase: 4})
+	a.Handle(0, RemoveStep{Module: b, Chase: 4})
+	if named(t, a, "Board").Chase(4) != nil {
+		t.Error("a chase of no steps is still there")
+	}
+	a.Handle(0, PressChase{Module: b, Chase: 1})
+	if live := a.eng.Tick(); live.Boards[b].Chase != 1 {
+		t.Fatalf("pressed, chase %d runs", live.Boards[b].Chase)
+	}
+	a.Handle(0, DeleteChase{Module: b, Chase: 1})
+	if live := a.eng.Tick(); len(named(t, a, "Board").Chases) != 0 || live.Boards[b].Chase != 0 || live.Stage[0] == 255 {
+		t.Errorf("deleted as it ran, the board has %+v and runs %d", named(t, a, "Board").Chases, live.Boards[b].Chase)
+	}
+}
+
+// TestTheChasesSettingsAreKeptWithinBounds: taps keep the speed they
+// set, and the speed, the fade and Follow the beat are a Board's alone,
+// changing the show only where they change.
+func TestTheChasesSettingsAreKeptWithinBounds(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	now := time.Unix(1000, 0)
+	a.eng.Now = func() time.Time { return now }
+	b, mixer := named(t, a, "Board").ID, named(t, a, "Mixer").ID
+	a.Handle(0, SetChaseSpeed{Module: b, Speed: show.HomeSpeed})
+	a.Handle(0, SetChaseFade{Module: b, Fade: 0})
+	a.Handle(0, FollowBeat{Module: b, On: false})
+	a.Handle(0, SetChaseSpeed{Module: mixer, Speed: 90})
+	a.Handle(0, SetChaseFade{Module: mixer, Fade: 0.5})
+	a.Handle(0, FollowBeat{Module: mixer, On: true})
+	a.Handle(0, TapChase{Module: b})
+	if m := named(t, a, "Mixer"); a.st.Unsaved || m.Speed != 0 || m.Fade != 0 || m.FollowBeat {
+		t.Fatalf("the show is changed: %v, and the mixer has %+v", a.st.Unsaved, m)
+	}
+	now = now.Add(400 * time.Millisecond)
+	a.Handle(0, TapChase{Module: b})
+	if a.st.Unsaved {
+		t.Fatal("a tap changed the show while the tapping may go on")
+	}
+	// The tapping stopped: the speed is kept, once.
+	now = now.Add(4 * time.Second)
+	a.eng.Tick()
+	a.recorded()
+	if m := named(t, a, "Board"); m.Speed != 150 || !a.st.Unsaved {
+		t.Errorf("taps 0.4 s apart keep a speed of %v", m.Speed)
+	}
+	a.Handle(0, SetChaseSpeed{Module: b, Speed: 1000})
+	a.Handle(0, SetChaseFade{Module: b, Fade: 1.5})
+	a.Handle(0, FollowBeat{Module: b, On: true})
+	if m := named(t, a, "Board"); m.Speed != show.MaxSpeed || m.Fade != 1 || !m.FollowBeat {
+		t.Errorf("the board's chase has speed %v, fade %v, following %v", m.Speed, m.Fade, m.FollowBeat)
+	}
+	a.Handle(0, SetChaseSpeed{Module: b, Speed: 3.4})
+	if m := named(t, a, "Board"); m.Speed != show.MinSpeed {
+		t.Errorf("a speed too slow is kept as %v", m.Speed)
+	}
+}
+
+// TestListeningToTheSoundCardWiresABeatIntoTheBoardOnce: an Audio in
+// and a Beat, wired in, and Follow the beat on; asked again, the show
+// is as it was.
+func TestListeningToTheSoundCardWiresABeatIntoTheBoardOnce(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	a.eng.Listen = func(string) (engine.Listener, error) { return nil, errors.New("no sound card here") }
+	for _, m := range a.st.Show.Modules {
+		if m.Kind == show.AudioIn {
+			t.Fatal("the start show listens to the sound card unasked")
+		}
+	}
+	b := named(t, a, "Board").ID
+	a.Handle(0, ListenForBeat{Module: b})
+	in, beat := named(t, a, "Audio in"), named(t, a, "Beat")
+	if in.Kind != show.AudioIn || beat.Kind != show.Beat || !named(t, a, "Board").FollowBeat {
+		t.Fatalf("listening added %+v and %+v", in, beat)
+	}
+	wired := func(from, to show.End) bool {
+		return slices.ContainsFunc(a.st.Show.Wires, func(w show.Wire) bool { return w.From == from && w.To == to })
+	}
+	if !wired(show.End{Module: in.ID, Port: "out"}, show.End{Module: beat.ID, Port: "in"}) ||
+		!wired(show.End{Module: beat.ID, Port: "out"}, show.End{Module: b, Port: "clock"}) {
+		t.Errorf("the wires are %+v", a.st.Show.Wires)
+	}
+	n := len(a.st.Show.Modules)
+	a.st.Unsaved = false
+	a.Handle(0, ListenForBeat{Module: b})
+	a.Handle(0, ListenForBeat{Module: named(t, a, "Mixer").ID})
+	if len(a.st.Show.Modules) != n || a.st.Unsaved {
+		t.Errorf("asked again, the show has %d modules, not %d", len(a.st.Show.Modules), n)
+	}
+}
+
+// TestChasesComeBackWithTheShow: saved and opened again, the Board has
+// its chases, speed, fade and Follow the beat, and none runs.
+func TestChasesComeBackWithTheShow(t *testing.T) {
+	a := NewApp(withScenes(), "", nil)
+	b := named(t, a, "Board").ID
+	a.Handle(0, NewChase{Module: b})
+	a.Handle(0, PressPad{Module: b, Pad: 1})
+	a.Handle(0, PressPad{Module: b, Pad: 0})
+	a.Handle(0, DoneChase{Module: b})
+	a.Handle(0, PressChase{Module: b, Chase: 1})
+	a.Handle(0, SetChaseSpeed{Module: b, Speed: 90})
+	a.Handle(0, SetChaseFade{Module: b, Fade: 0.25})
+	a.Handle(0, FollowBeat{Module: b, On: true})
+	path := filepath.Join(t.TempDir(), "Chases.crossroads")
+	a.saveTo(path)
+	a.openFrom(path)
+	m := named(t, a, "Board")
+	if len(m.Chases) != 1 || !slices.Equal(m.Chases[0].Steps, []int{1, 0}) || m.Speed != 90 || m.Fade != 0.25 || !m.FollowBeat {
+		t.Fatalf("opened again, the board has %+v", m)
+	}
+	if st := a.eng.Tick().Boards[b]; st.Chase != 0 || st.Last != 0 {
+		t.Errorf("opened again, the board shows %+v", st)
 	}
 }
