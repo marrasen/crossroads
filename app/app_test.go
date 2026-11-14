@@ -526,3 +526,57 @@ func TestAUniverseStaysWithinWhatItsBoxTakes(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordingAScenePutsItInTheShow: Record and a pad store what the
+// Board plays on that pad of the Board module, and the stage plays on;
+// the scene is renamed, faded and deleted from there.
+func TestRecordingAScenePutsItInTheShow(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	b, dome := named(t, a, "Board").ID, a.st.Show.Rig.Lights[0].ID
+	a.Handle(0, Hold{Module: b, Channels: []engine.Channel{{Light: dome, Offset: 2}}, Value: 120})
+	before := a.eng.Tick().Stage
+	a.Handle(0, PressRecord{Module: b})
+	a.Handle(0, PressPad{Module: b, Pad: 4})
+	sc := named(t, a, "Board").Scene(4)
+	if sc == nil || sc.Name != "Scene 5" || sc.Values[dome][2] != 120 || !a.st.Unsaved {
+		t.Fatalf("recorded onto pad 5, the board holds %+v", named(t, a, "Board").Scenes)
+	}
+	live := a.eng.Tick()
+	if live.Stage != before || len(live.Boards[b].Held) != 0 || len(live.Boards[b].On) != 1 {
+		t.Errorf("recorded, green plays %d and the board shows %+v", live.Stage[1], live.Boards[b])
+	}
+	a.Handle(0, RenameScene{Module: b, Pad: 4, Name: "  Green wash "})
+	a.Handle(0, RenameScene{Module: b, Pad: 4, Name: " "})
+	a.Handle(0, SetSceneFade{Module: b, Seconds: 30})
+	if m := named(t, a, "Board"); m.Scene(4).Name != "Green wash" || m.SceneFade != show.MaxSceneFade {
+		t.Errorf("renamed, the scene is %q; the fade is %v", m.Scene(4).Name, m.SceneFade)
+	}
+	a.Handle(0, DeleteScene{Module: b, Pad: 4})
+	if len(named(t, a, "Board").Scenes) != 0 {
+		t.Fatal("the scene deleted is still there")
+	}
+	if live := a.eng.Tick(); live.Stage[1] != 0 || len(live.Boards[b].On) != 0 {
+		t.Errorf("the scene deleted, green plays %d", live.Stage[1])
+	}
+}
+
+// TestScenesComeBackWithTheShow: saved and opened again, the Board has
+// its scenes and its fade, and none is on.
+func TestScenesComeBackWithTheShow(t *testing.T) {
+	a := NewApp(show.Start(), "", nil)
+	b, dome := named(t, a, "Board").ID, a.st.Show.Rig.Lights[0].ID
+	a.Handle(0, Hold{Module: b, Channels: []engine.Channel{{Light: dome, Offset: 2}, {Light: dome, Offset: 7}}, Value: 90})
+	a.Handle(0, PressRecord{Module: b})
+	a.Handle(0, PressPad{Module: b, Pad: 0})
+	a.Handle(0, SetSceneFade{Module: b, Seconds: 1.25})
+	path := filepath.Join(t.TempDir(), "Scenes.crossroads")
+	a.saveTo(path)
+	a.openFrom(path)
+	m := named(t, a, "Board")
+	if sc := m.Scene(0); sc == nil || sc.Values[dome][2] != 90 || sc.Values[dome][7] != 90 || m.SceneFade != 1.3 {
+		t.Fatalf("opened again, the board has %+v, fading %v", m.Scenes, m.SceneFade)
+	}
+	if live := a.eng.Tick(); len(live.Boards[b].On) != 0 || live.Stage[1] != 0 {
+		t.Errorf("opened again, %v is on and green plays %d", live.Boards[b].On, live.Stage[1])
+	}
+}

@@ -332,8 +332,11 @@ type Engine struct {
 	// show's effect programmes, by ID.
 	effects  map[string]*fxRunner
 	programs map[string]fx.Program
-	// boards are each Board's lights picked and channels held.
-	boards map[string]*board
+	// boards are each Board's lights picked, channels held and scenes
+	// playing, and recorded the scenes they recorded, for the
+	// application to keep.
+	boards   map[string]*board
+	recorded []Recorded
 	// audition is the pattern the editor plays while its test button
 	// is held, audLayer its light, and audBeats the beat it counts
 	// where the show has no Tempo.
@@ -866,7 +869,7 @@ func (e *Engine) Tick() Live {
 		case show.Effect:
 			e.effect(m, cat, now, &live)
 		case show.Board:
-			e.playBoard(m, cat, &live)
+			e.playBoard(m, cat, dt, &live)
 		case show.Button:
 			fired := e.pressed[id]
 			e.values[portKey{id, "out"}] = fired

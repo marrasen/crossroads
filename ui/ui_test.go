@@ -808,3 +808,118 @@ func TestABoardAddedToAShowWhoseOutputIsSetShowsTheOutput(t *testing.T) {
 		t.Error("the output's fields are not drawn")
 	}
 }
+
+// TestTheBoardTabRecordsOntoAPadAndPlaysIt: Record and then a pad ask
+// the board to wait and to press that pad; Escape, while it waits,
+// gives up; a pad's look follows what the engine says is on; and its
+// menu deletes its scene.
+func TestTheBoardTabRecordsOntoAPadAndPlaysIt(t *testing.T) {
+	s := show.Start()
+	dome := s.Rig.Lights[0].ID
+	board := ""
+	for i := range s.Modules {
+		if s.Modules[i].Kind == show.Board {
+			board = s.Modules[i].ID
+			s.Modules[i].SetScene(show.Scene{Pad: 2, Name: "Red wash", Values: map[string]map[int]byte{dome: {1: 255}}})
+		}
+	}
+	w := testWindow(t, geom.Sz(1280, 800))
+	Register(w, 0)
+	gunim.RegisterPatch(w, View, func(f *frame, call uiCall, u *gunim.UI) { call(f, u) })
+	c := w.Client()
+	if err := c.Mount(gunim.Root, View, View, app.State{Show: s}, app.ShowTopic, app.LiveTopic); err != nil {
+		t.Fatal(err)
+	}
+	e := engine.New(nil)
+	defer e.Close()
+	e.Set(s)
+	tick := func() {
+		if err := c.Patch(app.LiveTopic, e.Tick()); err != nil {
+			t.Fatal(err)
+		}
+		for range 3 {
+			w.Frame(time.Second / 60)
+		}
+	}
+	tick()
+	tab, ok := frameOf(t, w).tabs[show.TabBoard].(*boardTab)
+	if !ok {
+		t.Fatal("no Board tab in front")
+	}
+	b := tab.page
+	if !b.scenes[2].full || b.scenes[2].name != "Red wash" || b.scenes[0].full {
+		t.Fatalf("the pads show %+v", b.scenes[:3])
+	}
+	ui := frameUI(t, w)
+	at, _ := ui.Bounds(b)
+	sent := func() []gunim.Intent {
+		w.Frame(time.Second / 60)
+		var got []gunim.Intent
+		for len(c.Intents()) > 0 {
+			got = append(got, (<-c.Intents()).Intent)
+		}
+		return got
+	}
+	press := func(p geom.Point, button input.Button) []gunim.Intent {
+		w.Input(input.PointerMove{Pos: p})
+		w.Input(input.PointerDown{Pos: p, Button: button, Clicks: 1})
+		w.Input(input.PointerUp{Pos: p, Button: button})
+		return sent()
+	}
+	r, ok := ui.Bounds(b.record)
+	if !ok {
+		t.Fatal("Record is not drawn")
+	}
+	if got := press(r.Center(), input.ButtonPrimary); len(got) != 1 || got[0] != (app.PressRecord{Module: board}) {
+		t.Fatalf("Record asks %v", got)
+	}
+	e.PressRecord(board)
+	tick()
+	if b.record.Kind != widget.ButtonDanger {
+		t.Error("Record waiting is not shown")
+	}
+	w.Input(input.KeyPress{Key: input.KeyEscape})
+	if got := sent(); len(got) != 1 || got[0] != (app.GiveUpRecord{Module: board}) {
+		t.Errorf("Escape, while Record waits, asks %v", got)
+	}
+	pad := at.Min.Add(b.scenes[5].r.Center())
+	if got := press(pad, input.ButtonPrimary); len(got) != 1 || got[0] != (app.PressPad{Module: board, Pad: 5}) {
+		t.Fatalf("pad 6 asks %v", got)
+	}
+	if on, level := b.sceneLit(2); on || level != 0 {
+		t.Error("a scene the engine has not turned on is lit")
+	}
+	e.GiveUpRecord(board)
+	e.PressPad(board, 2)
+	tick()
+	if on, level := b.sceneLit(2); !on || level != 1 || b.record.Kind == widget.ButtonDanger {
+		t.Errorf("the scene on is lit %v at %v, and Record waits %v", on, level, b.record.Kind == widget.ButtonDanger)
+	}
+	w.Input(input.KeyPress{Key: input.KeyEscape})
+	if got := sent(); len(got) != 0 {
+		t.Errorf("Escape, with Record not waiting, asks %v", got)
+	}
+	// The scene's menu: its first item asks for a name over the window,
+	// its second deletes it.
+	_ = press(at.Min.Add(b.scenes[2].r.Center()), input.ButtonSecondary)
+	w.Input(input.KeyPress{Key: input.KeyDown})
+	w.Input(input.KeyPress{Key: input.KeyEnter})
+	for range 10 {
+		w.Frame(time.Second / 60)
+	}
+	w.Input(input.TextInput{Text: "Sunset"})
+	w.Input(input.KeyPress{Key: input.KeyEnter})
+	if got := sent(); len(got) != 1 || got[0] != (app.RenameScene{Module: board, Pad: 2, Name: "Sunset"}) {
+		t.Errorf("Rename from the pad's menu asks %v", got)
+	}
+	for range 30 {
+		w.Frame(time.Second / 60)
+	}
+	_ = press(at.Min.Add(b.scenes[2].r.Center()), input.ButtonSecondary)
+	w.Input(input.KeyPress{Key: input.KeyDown})
+	w.Input(input.KeyPress{Key: input.KeyDown})
+	w.Input(input.KeyPress{Key: input.KeyEnter})
+	if got := sent(); len(got) != 1 || got[0] != (app.DeleteScene{Module: board, Pad: 2}) {
+		t.Errorf("Delete from the pad's menu asks %v", got)
+	}
+}

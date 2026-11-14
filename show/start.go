@@ -96,7 +96,8 @@ func Start() Show {
 
 // DefaultLayout is the layout a new show opens with: Routes, Rig,
 // Controllers and Monitor on the left, the Stage over the Board,
-// Faders, Player and Live on the right, Routes and Board in front.
+// Faders, Player and Live on the wider right, Routes and Board in
+// front.
 func DefaultLayout() dock.Layout {
 	l := dock.NewLayout(true, TabRoutes, TabRig, TabMIDI, TabDraw, TabWatch, TabStage, TabBoard, TabFaders, TabPlayer, TabLive)
 	l.Move(TabStage, dock.Target{Side: dock.Right})
@@ -106,11 +107,17 @@ func DefaultLayout() dock.Layout {
 	l.Move(TabLive, dock.Target{At: TabBoard, Index: -1})
 	l.Show(TabBoard)
 	l.Show(TabRoutes)
-	// The Stage takes less of the right than the Board, whose faders
-	// want the height.
+	// The right takes a little more than half the window, and the Stage
+	// a quarter of it, so the Board's scenes, faders, master and output
+	// all show, the scenes' names with room to read.
 	if g := l.GroupOf(TabStage); g != nil {
 		if split := l.Parent(g.ID); split != nil {
-			l.SetShare(split.ID, 0.4)
+			l.SetShare(split.ID, 0.25)
+		}
+	}
+	if g := l.GroupOf(TabRoutes); g != nil {
+		if split := l.Parent(g.ID); split != nil {
+			l.SetShare(split.ID, 0.44)
 		}
 	}
 	return l

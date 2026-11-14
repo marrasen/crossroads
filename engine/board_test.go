@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim-dmx/fixtures"
@@ -233,5 +235,288 @@ func TestForgetLetsGoOfWhatAShowDoesNotKeep(t *testing.T) {
 	}
 	if live.Overrides[mixer][0] || live.Stage[0] == 0 {
 		t.Errorf("forgotten, blackout is %v and red plays %d", live.Overrides[mixer][0], live.Stage[0])
+	}
+}
+
+// scene puts a scene on pad of r's Board, of the dome's channels at the
+// values given, by offset, and plays the show with it.
+func (r *boardRig) scene(pad int, values map[int]byte) {
+	r.s.Module(r.board).SetScene(show.Scene{Pad: pad, Name: "Look " + string(rune('A'+pad)), Values: map[string]map[int]byte{r.dome: values}})
+	r.e.Set(r.s)
+}
+
+// clocked has r's engine tell the time from now, which step moves on a
+// quarter of a second, the longest a tick runs a clock on by.
+func (r *boardRig) clocked() (step func() Live) {
+	now := time.Unix(1000, 0)
+	r.e.Now = func() time.Time { return now }
+	r.e.Tick()
+	return func() Live {
+		now = now.Add(250 * time.Millisecond)
+		return r.e.Tick()
+	}
+}
+
+// TestRecordingStoresTheFadersOverTheScenesAndTheStagePlaysOn: a scene
+// on and two faders held, recorded onto a pad, make a scene of both,
+// the faders winning; it is then on alone and the faders let go, and
+// the stage plays as it did, tick by tick, before and after the show
+// holds the scene.
+func TestRecordingStoresTheFadersOverTheScenesAndTheStagePlaysOn(t *testing.T) {
+	r := newBoardRig(t)
+	// Green and the strobe, which the grand master does not dim.
+	r.scene(0, map[int]byte{2: 100, 7: 50})
+	r.e.PressPad(r.board, 0)
+	if live := r.e.Tick(); live.Stage[1] != 100 || live.Stage[6] != 50 {
+		t.Fatalf("the scene on plays green %d and strobe %d", live.Stage[1], live.Stage[6])
+	}
+	r.e.Hold(r.board, []Channel{{Light: r.dome, Offset: 2}, {Light: r.dome, Offset: 4}}, 200)
+	r.e.Hold(r.board, []Channel{{Light: r.dome, Offset: 4}}, 80)
+	before := r.e.Tick().Stage
+	if before[1] != 200 || before[3] != 80 {
+		t.Fatalf("held, green plays %d and white %d", before[1], before[3])
+	}
+	r.e.PressRecord(r.board)
+	if !r.e.Tick().Boards[r.board].Record {
+		t.Fatal("Record pressed does not wait for a pad")
+	}
+	r.e.PressPad(r.board, 1)
+	steady := func(when string) {
+		t.Helper()
+		for i := range 5 {
+			live := r.e.Tick()
+			if live.Stage != before {
+				t.Fatalf("%s, tick %d: the stage changed", when, i)
+			}
+			st := live.Boards[r.board]
+			if !slices.Equal(st.On, []int{1}) || len(st.Held) != 0 || st.Record || st.Levels[1] != 1 {
+				t.Fatalf("%s, tick %d: the board shows %+v", when, i, st)
+			}
+		}
+	}
+	steady("recorded")
+	got := r.e.Recorded()
+	if len(got) != 1 || got[0].Module != r.board {
+		t.Fatalf("recorded %+v", got)
+	}
+	sc := got[0].Scene
+	want := map[string]map[int]byte{r.dome: {2: 200, 4: 80, 7: 50}}
+	if sc.Pad != 1 || sc.Name != "Scene 2" || !reflect.DeepEqual(sc.Values, want) {
+		t.Errorf("the scene recorded is %+v", sc)
+	}
+	if again := r.e.Recorded(); len(again) != 0 {
+		t.Errorf("asked again, recorded %+v", again)
+	}
+	steady("handed to the application")
+	r.s.Module(r.board).SetScene(sc)
+	r.e.Set(r.s)
+	steady("held by the show")
+	if len(r.e.boards[r.board].kept) != 0 {
+		t.Error("the board still keeps a scene the show holds")
+	}
+}
+
+// TestASceneRecordedPlaysOnThroughAShowSetWithoutIt: a show set before
+// the application has the scene, as for another change, does not stop
+// it playing.
+func TestASceneRecordedPlaysOnThroughAShowSetWithoutIt(t *testing.T) {
+	r := newBoardRig(t)
+	r.e.Hold(r.board, []Channel{{Light: r.dome, Offset: 2}}, 150)
+	r.e.Tick()
+	r.e.PressRecord(r.board)
+	r.e.PressPad(r.board, 5)
+	r.e.Set(r.s)
+	if live := r.e.Tick(); live.Stage[1] != 150 || !slices.Equal(live.Boards[r.board].On, []int{5}) {
+		t.Errorf("a show set without the scene, green plays %d and %v is on", live.Stage[1], live.Boards[r.board].On)
+	}
+}
+
+// TestRecordingOntoAPadThatHasASceneReplacesIt, and keeps its name.
+func TestRecordingOntoAPadThatHasASceneReplacesIt(t *testing.T) {
+	r := newBoardRig(t)
+	r.scene(2, map[int]byte{2: 100, 7: 50})
+	r.e.Hold(r.board, []Channel{{Light: r.dome, Offset: 4}}, 60)
+	r.e.PressRecord(r.board)
+	r.e.PressPad(r.board, 2)
+	got := r.e.Recorded()
+	if len(got) != 1 || got[0].Scene.Name != "Look C" || !reflect.DeepEqual(got[0].Scene.Values, map[string]map[int]byte{r.dome: {4: 60}}) {
+		t.Fatalf("recorded over Look C: %+v", got)
+	}
+	if live := r.e.Tick(); live.Stage[1] != 0 || live.Stage[3] != 60 {
+		t.Errorf("the new scene plays green %d and white %d", live.Stage[1], live.Stage[3])
+	}
+}
+
+// TestRecordingWithNothingToStoreGivesUp: no fader held and no scene
+// on, a pad pressed stores nothing, and Record waits no more.
+func TestRecordingWithNothingToStoreGivesUp(t *testing.T) {
+	r := newBoardRig(t)
+	r.scene(3, map[int]byte{2: 100})
+	r.e.PressRecord(r.board)
+	r.e.PressPad(r.board, 3)
+	st := r.e.Tick().Boards[r.board]
+	if got := r.e.Recorded(); len(got) != 0 || st.Record || len(st.On) != 0 {
+		t.Errorf("recording nothing stored %+v, and the board shows %+v", got, st)
+	}
+}
+
+// TestAPadTurnsItsSceneOnAndOff, an empty pad does nothing, and Record
+// pressed again, or given up, waits no more.
+func TestAPadTurnsItsSceneOnAndOff(t *testing.T) {
+	r := newBoardRig(t)
+	r.scene(0, map[int]byte{2: 100})
+	r.e.PressPad(r.board, 0)
+	if live := r.e.Tick(); !slices.Equal(live.Boards[r.board].On, []int{0}) || live.Stage[1] != 100 {
+		t.Errorf("pressed, pad 1 shows %v and green plays %d", live.Boards[r.board].On, live.Stage[1])
+	}
+	r.e.PressPad(r.board, 0)
+	if live := r.e.Tick(); len(live.Boards[r.board].On) != 0 || live.Stage[1] != 0 {
+		t.Errorf("pressed again, %v is on and green plays %d", live.Boards[r.board].On, live.Stage[1])
+	}
+	r.e.PressPad(r.board, 9)
+	r.e.PressPad(r.board, show.Pads)
+	if st := r.e.Tick().Boards[r.board]; len(st.On) != 0 || len(st.Levels) != 0 {
+		t.Errorf("empty pads pressed, the board shows %+v", st)
+	}
+	r.e.PressRecord(r.board)
+	r.e.PressRecord(r.board)
+	if r.e.Tick().Boards[r.board].Record {
+		t.Error("Record pressed twice still waits")
+	}
+	r.e.PressRecord(r.board)
+	r.e.GiveUpRecord(r.board)
+	r.e.GiveUpRecord(r.board)
+	if r.e.Tick().Boards[r.board].Record {
+		t.Error("given up, Record still waits")
+	}
+}
+
+// TestASceneFadesWhatTheMasterDimsAndSetsTheRestAtOnce: over a fade of
+// two seconds, green comes up and goes down in step, and the strobe is
+// set as the scene goes on and let go as it has faded out.
+func TestASceneFadesWhatTheMasterDimsAndSetsTheRestAtOnce(t *testing.T) {
+	r := newBoardRig(t)
+	r.s.Module(r.board).SceneFade = 2
+	r.scene(0, map[int]byte{2: 200, 7: 100})
+	step := r.clocked()
+	home := step().Stage[6]
+	r.e.PressPad(r.board, 0)
+	for i, want := range []byte{25, 50, 75, 100, 125, 150, 175, 200, 200} {
+		live := step()
+		if live.Stage[1] != want || live.Stage[6] != 100 {
+			t.Fatalf("fading in, at %v s green plays %d, want %d, and strobe %d", float64(i+1)/4, live.Stage[1], want, live.Stage[6])
+		}
+		if !slices.Equal(live.Boards[r.board].On, []int{0}) {
+			t.Fatalf("fading in, %v is on", live.Boards[r.board].On)
+		}
+	}
+	r.e.PressPad(r.board, 0)
+	for i, want := range []byte{175, 150, 125, 100, 75, 50, 25} {
+		live := step()
+		if live.Stage[1] != want || live.Stage[6] != 100 {
+			t.Fatalf("fading out, at %v s green plays %d, want %d, and strobe %d", float64(i+1)/4, live.Stage[1], want, live.Stage[6])
+		}
+		if st := live.Boards[r.board]; len(st.On) != 0 || st.Levels[0] <= 0 {
+			t.Fatalf("fading out, the board shows %+v", st)
+		}
+	}
+	live := step()
+	if live.Stage[1] != 0 || live.Stage[6] != home || len(live.Boards[r.board].Levels) != 0 {
+		t.Errorf("faded out, green plays %d and strobe %d, and the board shows %+v", live.Stage[1], live.Stage[6], live.Boards[r.board])
+	}
+	// No fade: on and off at once.
+	r.s.Module(r.board).SceneFade = 0
+	r.e.Set(r.s)
+	r.e.PressPad(r.board, 0)
+	if live := step(); live.Stage[1] != 200 {
+		t.Errorf("with no fade, green comes up to %d", live.Stage[1])
+	}
+	r.e.PressPad(r.board, 0)
+	if live := step(); live.Stage[1] != 0 || live.Stage[6] != home {
+		t.Errorf("with no fade, green goes down to %d and strobe to %d", live.Stage[1], live.Stage[6])
+	}
+}
+
+// TestTwoScenesOnOneChannelPlayTheHigher, steadily, and the lower
+// shows again as the higher goes.
+func TestTwoScenesOnOneChannelPlayTheHigher(t *testing.T) {
+	r := newBoardRig(t)
+	r.scene(0, map[int]byte{2: 100})
+	r.scene(1, map[int]byte{2: 180, 4: 20})
+	r.e.PressPad(r.board, 0)
+	r.e.PressPad(r.board, 1)
+	for i := range 50 {
+		if live := r.e.Tick(); live.Stage[1] != 180 || live.Stage[3] != 20 {
+			t.Fatalf("tick %d: green plays %d and white %d", i, live.Stage[1], live.Stage[3])
+		}
+	}
+	r.e.PressPad(r.board, 1)
+	if live := r.e.Tick(); live.Stage[1] != 100 || live.Stage[3] != 0 {
+		t.Errorf("the higher gone, green plays %d and white %d", live.Stage[1], live.Stage[3])
+	}
+}
+
+// TestAFaderHeldWinsOverASceneAndClearShowsTheSceneAgain: green held
+// below the scene's plays what the fader says, and once cleared, what
+// the scene says.
+func TestAFaderHeldWinsOverASceneAndClearShowsTheSceneAgain(t *testing.T) {
+	r := newBoardRig(t)
+	r.scene(0, map[int]byte{2: 200})
+	r.e.PressPad(r.board, 0)
+	r.e.Hold(r.board, []Channel{{Light: r.dome, Offset: 2}}, 30)
+	if live := r.e.Tick(); live.Stage[1] != 30 || live.Owners[2] != r.board {
+		t.Errorf("held under the scene, green plays %d", live.Stage[1])
+	}
+	r.e.ClearBoard(r.board)
+	if live := r.e.Tick(); live.Stage[1] != 200 {
+		t.Errorf("cleared, green plays %d, not the scene's 200", live.Stage[1])
+	}
+}
+
+// TestASceneLeavesOutWhatTheRigDoesNotHave: a light taken out of the
+// rig leaves every scene, and a channel its light does not have is
+// passed over as the scene plays.
+func TestASceneLeavesOutWhatTheRigDoesNotHave(t *testing.T) {
+	r := newBoardRig(t)
+	r.s.Module(r.board).SetScene(show.Scene{Pad: 0, Name: "Both", Values: map[string]map[int]byte{
+		r.dome: {2: 90, 12: 255}, r.par: {1: 70}}})
+	r.e.Set(r.s)
+	r.e.PressPad(r.board, 0)
+	live := r.e.Tick()
+	if live.Stage[1] != 90 || live.Stage[9] != 70 || live.Stage[11] != 0 {
+		t.Errorf("the scene plays green %d, the par's dimmer %d and channel 12 %d", live.Stage[1], live.Stage[9], live.Stage[11])
+	}
+	r.s.RemoveLight(r.par)
+	if _, ok := r.s.Module(r.board).Scene(0).Values[r.par]; ok {
+		t.Fatal("the par taken out of the rig stayed in the scene")
+	}
+	r.e.Set(r.s)
+	if live := r.e.Tick(); live.Stage[1] != 90 || !slices.Equal(live.Boards[r.board].On, []int{0}) {
+		t.Errorf("the par taken out, the scene plays green %d, on %v", live.Stage[1], live.Boards[r.board].On)
+	}
+	r.s.Module(r.board).Scenes = nil
+	r.e.Set(r.s)
+	if live := r.e.Tick(); live.Stage[1] != 0 || len(live.Boards[r.board].On) != 0 {
+		t.Errorf("the scene deleted, green plays %d, on %v", live.Stage[1], live.Boards[r.board].On)
+	}
+}
+
+// TestForgetLetsGoOfTheScenesOn, Record waiting, and the scenes
+// recorded that the application has not taken.
+func TestForgetLetsGoOfTheScenesOn(t *testing.T) {
+	r := newBoardRig(t)
+	r.scene(0, map[int]byte{2: 100})
+	r.e.PressPad(r.board, 0)
+	r.e.PressRecord(r.board)
+	r.e.PressPad(r.board, 1)
+	r.e.PressRecord(r.board)
+	r.e.Forget()
+	r.e.Set(r.s)
+	live := r.e.Tick()
+	if st := live.Boards[r.board]; len(st.On) != 0 || st.Record || live.Stage[1] != 0 {
+		t.Errorf("forgotten, the board shows %+v and green plays %d", st, live.Stage[1])
+	}
+	if got := r.e.Recorded(); len(got) != 0 {
+		t.Errorf("forgotten, the engine still hands over %+v", got)
 	}
 }

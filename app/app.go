@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/marrasen/crossroads/controller"
@@ -122,6 +123,33 @@ type (
 	}
 	// ClearBoard lets go of every channel Board Module's faders hold.
 	ClearBoard struct{ Module string }
+	// PressRecord has Board Module wait for a pad to record onto, or,
+	// where it waits, give up.
+	PressRecord struct{ Module string }
+	// GiveUpRecord has Board Module wait for no pad to record onto.
+	GiveUpRecord struct{ Module string }
+	// PressPad presses Board Module's pad Pad, from 0: where Record
+	// waits, it records onto it; otherwise it turns its scene on or off.
+	PressPad struct {
+		Module string
+		Pad    int
+	}
+	// RenameScene names the scene on Board Module's pad Pad Name.
+	RenameScene struct {
+		Module, Name string
+		Pad          int
+	}
+	// DeleteScene takes the scene on Board Module's pad Pad out.
+	DeleteScene struct {
+		Module string
+		Pad    int
+	}
+	// SetSceneFade has Board Module's scenes fade in and out over
+	// Seconds, 0 to 10.
+	SetSceneFade struct {
+		Module  string
+		Seconds float64
+	}
 	// Tap taps Tempo Module's beat: the beat falls on the tap, and taps
 	// a steady gap apart set its tempo, which it then plays.
 	Tap struct{ Module string }
@@ -396,9 +424,11 @@ func (a *App) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-a.changed:
+			a.recorded()
 		case <-tick.C:
 			live := a.eng.Tick()
 			a.learnt()
+			a.recorded()
 			n++
 			if n%2 == 0 {
 				for _, w := range a.wins {
@@ -582,6 +612,33 @@ func (a *App) Handle(win int, in gunim.Intent) {
 	case ClearBoard:
 		a.eng.ClearBoard(in.Module)
 		return
+	case PressRecord:
+		a.eng.PressRecord(in.Module)
+		return
+	case GiveUpRecord:
+		a.eng.GiveUpRecord(in.Module)
+		return
+	case PressPad:
+		a.eng.PressPad(in.Module, in.Pad)
+		a.recorded()
+		return
+	case RenameScene:
+		m := s.Module(in.Module)
+		name := strings.TrimSpace(in.Name)
+		if m == nil || m.Scene(in.Pad) == nil || name == "" {
+			return
+		}
+		m.Scene(in.Pad).Name = name
+	case DeleteScene:
+		m := s.Module(in.Module)
+		if m == nil || m.Scene(in.Pad) == nil {
+			return
+		}
+		m.Scenes = slices.DeleteFunc(m.Scenes, func(c show.Scene) bool { return c.Pad == in.Pad })
+	case SetSceneFade:
+		if m := s.Module(in.Module); m != nil {
+			m.SceneFade = math.Round(min(max(in.Seconds, 0), show.MaxSceneFade)*10) / 10
+		}
 	case Tap:
 		m := s.Module(in.Module)
 		if m == nil || m.Kind != show.Tempo {
@@ -851,6 +908,24 @@ func (a *App) learntFrom(got []engine.Learnt) {
 			c.ID = "c" + strconv.Itoa(n)
 		}
 		m.Controls = append(m.Controls, c)
+	}
+	a.setShow(s)
+}
+
+// recorded keeps the scenes the Boards recorded in the show.
+func (a *App) recorded() { a.recordedFrom(a.eng.Recorded()) }
+
+// recordedFrom puts each scene got on its Board's pad, in place of the
+// scene there.
+func (a *App) recordedFrom(got []engine.Recorded) {
+	if len(got) == 0 {
+		return
+	}
+	s := a.st.Show.Clone()
+	for _, r := range got {
+		if m := s.Module(r.Module); m != nil && m.Kind == show.Board {
+			m.SetScene(r.Scene)
+		}
 	}
 	a.setShow(s)
 }
