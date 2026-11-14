@@ -19,7 +19,7 @@ import (
 )
 
 // boardTab is the Board tab, which plays the show's first Board: its
-// page, with the menu a scene's pad opens, scrolled.
+// page, with the menu a scene's pad or a chase opens, scrolled.
 type boardTab struct {
 	page   *boardPage
 	scroll *widget.Scroll
@@ -55,7 +55,8 @@ func (t *boardTab) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids gu
 }
 
 // boardPage is the Board tab's page, as a lighting desk: the pads of
-// the scenes, with Record and the scene fade; a pad for each light of
+// the scenes, with Record and the scene fade; the chases, with their
+// speed, fade and Tap, and Follow the beat; a pad for each light of
 // the rig and each group, to pick with; a fader for each channel of
 // what is picked, and Clear; the grand master, Blackout and Flash of
 // the mixer the Board is wired into; and the DMX out that mixer feeds.
@@ -63,8 +64,9 @@ func (t *boardTab) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids gu
 type boardPage struct {
 	st     *app.State
 	played engine.Live
-	// menu is the menu a scene's pad opens, and menuOpen whether it
-	// was open when last looked at: as it opened, and at each tick.
+	// menu is the menu a scene's pad or a chase opens, and menuOpen
+	// whether it was open when last looked at: as it opened, and at
+	// each tick.
 	menu     *widget.ContextMenu
 	menuOpen bool
 	// view is how much of the page the tab shows.
@@ -82,19 +84,26 @@ type boardPage struct {
 	record *widget.Button
 	fade   *widget.Slider
 	scenes [show.Pads]scenePad
+	// The chases' controls, and a button for each chase, in order;
+	// making is the place of the one being made. clocked says a clock
+	// is wired into the Board.
+	chaseControls
+	chases  []chasePad
+	making  geom.Rect
+	clocked bool
 	// picked are the lights picked, as the engine last said, and faders
 	// a fader for each channel of them.
 	picked []string
 	faders []*boardFader
 	kids   []gunim.Node
 	pads   []lightPad
-	// scenesY, lightsY, headY and outY are where the scenes, the
-	// lights, the channels and the output start, area is the faders'
-	// room, and column the master's.
-	scenesY, lightsY, headY, outY float32
-	area, column                  geom.Rect
-	per                           float32
-	placed                        map[gunim.Node]geom.Rect
+	// scenesY, chasesY, tempoY, lightsY, headY and outY are where the
+	// scenes, the chases, their speed, the lights, the channels and the
+	// output start, area is the faders' room, and column the master's.
+	scenesY, chasesY, tempoY, lightsY, headY, outY float32
+	area, column                                   geom.Rect
+	per                                            float32
+	placed                                         map[gunim.Node]geom.Rect
 }
 
 // A boardFader is one of the page's channel faders: what it sets, its
@@ -165,52 +174,75 @@ func newBoardPage() *boardPage {
 	b.fade.OnCommit = func(v float32, _ *gunim.UI) gunim.Intent {
 		return app.SetSceneFade{Module: b.board, Seconds: float64(v)}
 	}
+	b.newChaseControls()
 	return b
 }
 
-// padMenu is the page with the menu a scene's pad opens on a right
-// click: Rename and Delete, for the scene on the pad pressed then.
+// padMenu is the page with the menu a scene's pad or a chase opens on
+// a right click: Rename and Delete, for the scene on the pad pressed
+// then; Rename, Remove the last step and Delete, for the chase.
 func (b *boardPage) padMenu() *widget.ContextMenu {
 	c := widget.NewContextMenu(b, nil)
 	b.menu = c
 	var board string
-	pad := -1
+	pad, chase := -1, chasePad{}
 	c.Prepare = func(at geom.Point, _ *gunim.UI) bool {
-		board, pad = b.board, b.sceneAt(at)
-		if board == "" || pad < 0 || !b.scenes[pad].full {
+		board, pad, chase = b.board, b.sceneAt(at), chasePad{}
+		if board == "" {
 			return false
 		}
-		c.SetItems([]widget.MenuItem{{Label: "Rename…", Icon: icon.Pencil}, {Label: "Delete", Icon: icon.Trash2}})
+		switch i := b.chaseAt(at); {
+		case pad >= 0 && b.scenes[pad].full:
+			c.SetItems([]widget.MenuItem{{Label: "Rename…", Icon: icon.Pencil}, {Label: "Delete", Icon: icon.Trash2}})
+		case i >= 0:
+			pad, chase = -1, b.chases[i]
+			c.SetItems([]widget.MenuItem{{Label: "Rename…", Icon: icon.Pencil}, {Label: "Remove the last step", Icon: icon.Undo2},
+				{Label: "Delete", Icon: icon.Trash2}})
+		default:
+			return false
+		}
 		b.menuOpen = true
 		return true
 	}
 	c.OnPick = func(i int, u *gunim.UI) gunim.Intent {
-		if i == 1 {
-			return app.DeleteScene{Module: board, Pad: pad}
+		if pad >= 0 {
+			if i == 1 {
+				return app.DeleteScene{Module: board, Pad: pad}
+			}
+			b.rename("Rename the scene on pad "+strconv.Itoa(pad+1), b.scenes[pad].name, func(name string) gunim.Intent {
+				return app.RenameScene{Module: board, Pad: pad, Name: name}
+			}, u)
+			return nil
 		}
-		b.rename(board, pad, u)
+		id := chase.id
+		switch i {
+		case 1:
+			return app.RemoveStep{Module: board, Chase: id}
+		case 2:
+			return app.DeleteChase{Module: board, Chase: id}
+		}
+		b.rename("Rename the chase", chase.name, func(name string) gunim.Intent {
+			return app.RenameChase{Module: board, Chase: id, Name: name}
+		}, u)
 		return nil
 	}
 	return c
 }
 
-// rename asks, over the window, for a new name for the scene on pad of
-// Board board.
-func (b *boardPage) rename(board string, pad int, u *gunim.UI) {
+// rename asks, over the window, under title, for a new name in place of
+// name, which named makes the intent of.
+func (b *boardPage) rename(title, name string, named func(string) gunim.Intent, u *gunim.UI) {
 	root := u.Root()
 	if root == nil {
 		return
 	}
-	name := b.scenes[pad].name
-	d := widget.NewDialog("Rename the scene on pad " + strconv.Itoa(pad+1))
+	d := widget.NewDialog(title)
 	field := widget.NewTextField()
 	field.SetText(name, nil)
 	field.Select(0, len([]rune(name)))
 	d.Body = widget.NewForm().Add("Name", field)
 	d.SetButtons("Rename", "Cancel")
-	d.OnAccept = func(*gunim.UI) gunim.Intent {
-		return app.RenameScene{Module: board, Pad: pad, Name: field.Text()}
-	}
+	d.OnAccept = func(*gunim.UI) gunim.Intent { return named(field.Text()) }
 	u.Insert(root, d)
 }
 
@@ -252,6 +284,7 @@ func (b *boardPage) show(st *app.State, u *gunim.UI) {
 	if m := s.Module(b.board); m != nil && !b.fade.Held() {
 		b.fade.SetValue(float32(m.SceneFade), u)
 	}
+	b.showChases(s, s.Module(b.board), u)
 	b.pads = b.pads[:0]
 	for _, p := range s.Rig.Lights {
 		b.pads = append(b.pads, lightPad{label: p.Name, lights: []string{p.ID}})
@@ -296,6 +329,7 @@ func (b *boardPage) live(l engine.Live, u *gunim.UI) {
 	if st.Record {
 		b.record.Kind = widget.ButtonDanger
 	}
+	b.liveChases(&st)
 	u.Invalidate()
 }
 
@@ -394,7 +428,9 @@ func (b *boardPage) keep(u *gunim.UI) {
 	case "":
 		want = append(want, b.add)
 	default:
-		want = append(want, b.record, b.fade, b.clear)
+		want = append(want, b.record, b.fade)
+		want = append(want, b.chaseKids()...)
+		want = append(want, b.clear)
 		for _, f := range b.faders {
 			want = append(want, f.s)
 		}
@@ -520,6 +556,7 @@ func (b *boardPage) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Childr
 		b.scenes[i].r = geom.Rc(boardSide+float32(col)*(cw+sceneGap), y+float32(row)*(sceneH+sceneGap), cw, sceneH)
 	}
 	y += float32((len(b.scenes)+scenesRow-1)/scenesRow)*(sceneH+sceneGap) + 8
+	y = b.layChases(y, full, cw, b.played.Boards[b.board].Making, lay)
 	b.lightsY = y
 	y += boardHead
 	cols := max(int((right-boardSide+lightGap)/(lightW+lightGap)), 1)
@@ -631,6 +668,7 @@ func (b *boardPage) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids g
 	st := b.played.Boards[b.board]
 	accent := widget.Accent.Get(th)
 	b.paintScenes(p, f, &st)
+	b.paintChases(p, f, &st)
 	h := bold.Shape("Lights", 12)
 	h.Paint(p, geom.Pt(boardSide, b.lightsY), quiet)
 	if len(b.pads) == 0 {
@@ -717,7 +755,9 @@ func (b *boardPage) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids g
 // paintScenes paints the scenes' head, the scene fade, and the pads:
 // one with a scene shows its name and a swatch of its colour, lit as it
 // is on and as far as it has faded in; an empty one is dim. While Record
-// waits, the head says so and every pad is ringed in its colour.
+// waits, the head says so and every pad is ringed in its colour. While
+// a chase is made, each pad says where it comes in it; while one runs,
+// the pad of its step is ringed.
 func (b *boardPage) paintScenes(p *paint.Painter, f gunim.Frame, st *engine.BoardState) {
 	th := f.Theme
 	ink := widget.Ink.Get(th)
@@ -753,15 +793,26 @@ func (b *boardPage) paintScenes(p *paint.Painter, f gunim.Frame, st *engine.Boar
 		if on {
 			p.RRect(geom.Rc(r.Min.X, r.Min.Y, 4, r.Size().H), 2, paint.Solid(accent))
 		}
-		if st.Record {
+		switch {
+		case st.Record:
 			p.RRectStroke(r, 10, paint.Fill{}, paint.Stroke{Width: 1.5, Color: faded(red, 0.8)})
+		case st.Making && sp.full:
+			p.RRectStroke(r, 10, paint.Fill{}, paint.Stroke{Width: 1.5, Color: faded(accent, 0.8)})
+		case b.stepPad(st) == i:
+			p.RRectStroke(r, 10, paint.Fill{}, paint.Stroke{Width: 2, Color: accent})
 		}
+		// The pad's number, or, while a chase is made, where the pad
+		// comes in it.
 		num := face.Shape(strconv.Itoa(i+1), 10)
 		nc := faded(ink, 0.3)
 		if sp.full {
 			nc = quiet
 		}
-		num.Paint(p, geom.Pt(r.Max.X-8-num.Advance, r.Min.Y+6), nc)
+		if order := stepsOn(st.Steps, i); st.Making && order != "" {
+			num, nc = bold.Shape(order, 11), accent
+		}
+		room := r.Size().W / 2
+		num.PaintFaded(p, geom.Pt(r.Max.X-8-min(num.Advance, room), r.Min.Y+5), nc, room, fade)
 		if !sp.full {
 			continue
 		}
@@ -822,8 +873,12 @@ func (b *boardPage) paintOutput(p *paint.Painter, f gunim.Frame, box geom.Size) 
 	t.PaintFaded(p, geom.Pt(x+14, y+1), ink, box.W-boardSide-x-14, fade)
 }
 
-// dim reports whether n is a channel fader nothing holds, drawn dim.
+// dim reports whether n is a channel fader nothing holds, or the
+// chase's speed while the beat sets it, drawn dim.
 func (b *boardPage) dim(n gunim.Node) bool {
+	if n == b.speed {
+		return b.played.Boards[b.board].Following
+	}
 	for _, bf := range b.faders {
 		if bf.s == n {
 			return !bf.held && !bf.s.Held()
@@ -846,9 +901,10 @@ func (b *boardPage) pickedText() string {
 }
 
 // Handle implements [gunim.Handler]: a scene's pad pressed presses it
-// on the Board, which records onto it where Record waits, or turns its
-// scene on or off; a light's pad picks its light, or its group's,
-// alone, and with Ctrl, adds them, or takes them out.
+// on the Board, which adds it to the chase being made, records onto it
+// where Record waits, or turns its scene on or off; a chase pressed
+// runs or stops; a light's pad picks its light, or its group's, alone,
+// and with Ctrl, adds them, or takes them out.
 func (b *boardPage) Handle(e input.Event, u *gunim.UI) bool {
 	d, ok := e.(input.PointerDown)
 	if !ok || d.Button != input.ButtonPrimary || b.board == "" {
@@ -867,6 +923,10 @@ func (b *boardPage) Handle(e input.Event, u *gunim.UI) bool {
 		u.Send(b, app.PressPad{Module: b.board, Pad: i})
 		return true
 	}
+	if i := b.chaseAt(d.Pos); i >= 0 {
+		u.Send(b, app.PressChase{Module: b.board, Chase: b.chases[i].id})
+		return true
+	}
 	for _, pd := range b.pads {
 		if pd.r.Contains(d.Pos) {
 			u.Send(b, app.Pick{Module: b.board, Lights: pd.lights, Toggle: d.Mods.Has(input.ModControl)})
@@ -876,15 +936,32 @@ func (b *boardPage) Handle(e input.Event, u *gunim.UI) bool {
 	return false
 }
 
-// CatchKey implements [gunim.KeyCatcher]: Escape, while Record waits,
-// gives up.
+// CatchKey implements [gunim.KeyCatcher]: Escape, while a chase is
+// made, gives it up, and while Record waits, gives that up.
 func (b *boardPage) CatchKey(e input.Event, u *gunim.UI) bool {
 	k, ok := e.(input.KeyPress)
-	if !ok || k.Key != input.KeyEscape || b.board == "" || !b.played.Boards[b.board].Record {
+	if !ok || k.Key != input.KeyEscape || b.board == "" {
 		return false
 	}
-	u.Send(b, app.GiveUpRecord{Module: b.board})
+	switch st := b.played.Boards[b.board]; {
+	case st.Making:
+		u.Send(b, app.GiveUpChase{Module: b.board})
+	case st.Record:
+		u.Send(b, app.GiveUpRecord{Module: b.board})
+	default:
+		return false
+	}
 	return true
+}
+
+// stepPad is the pad of the step the chase that runs is at, -1 for
+// none.
+func (b *boardPage) stepPad(st *engine.BoardState) int {
+	i := slices.IndexFunc(b.chases, func(c chasePad) bool { return c.id == st.Chase })
+	if st.Chase == 0 || i < 0 || st.Step < 0 || st.Step >= len(b.chases[i].steps) {
+		return -1
+	}
+	return b.chases[i].steps[st.Step]
 }
 
 // countOf is n things, as "1 light" or "3 lights".

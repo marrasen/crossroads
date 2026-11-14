@@ -264,8 +264,8 @@ type Module struct {
 	// Levels are a Look's level for each thing its lights do, by role,
 	// 0 to 1.
 	Levels map[string]float64 `json:"levels,omitempty"`
-	// Fade is how much of each step a Chaser fades, 0 to 1, and how
-	// many seconds a Cue list takes to fade to a cue.
+	// Fade is how much of each step a Chaser, or a Board's chase, fades,
+	// 0 to 1, and how many seconds a Cue list takes to fade to a cue.
 	Fade float64 `json:"fade,omitempty"`
 	// Seconds is where a Timer counts down from, and Stopwatch has it
 	// count up instead.
@@ -281,6 +281,13 @@ type Module struct {
 	// SceneFade how many seconds one takes to fade in or out.
 	Scenes    []Scene `json:"scenes,omitempty"`
 	SceneFade float64 `json:"sceneFade,omitempty"`
+	// Chases are a Board's chases, in the order they were made; Speed
+	// is how many steps a minute its chase runs at, [HomeSpeed] where it
+	// is 0; and FollowBeat has the chase step on each beat of the clock
+	// wired into the Board instead.
+	Chases     []Chase `json:"chases,omitempty"`
+	Speed      float64 `json:"speed,omitempty"`
+	FollowBeat bool    `json:"followBeat,omitempty"`
 }
 
 // Pads is how many pads a Board has for scenes, and MaxSceneFade the
@@ -289,6 +296,46 @@ const (
 	Pads         = 16
 	MaxSceneFade = 10.0
 )
+
+// The speeds a Board's chase runs between, in steps a minute, and the
+// one it runs at where none is set.
+const (
+	MinSpeed  = 20.0
+	MaxSpeed  = 600.0
+	HomeSpeed = 120.0
+)
+
+// A Chase is a Board's scenes played one after another: its ID, from 1,
+// which no other chase of the Board has, its name, and its steps, each a
+// scene by its pad, from 0, in the order they play.
+type Chase struct {
+	ID    int    `json:"id"`
+	Name  string `json:"name"`
+	Steps []int  `json:"steps"`
+}
+
+// Clone returns a deep copy of c.
+func (c Chase) Clone() Chase {
+	c.Steps = slices.Clone(c.Steps)
+	return c
+}
+
+// Chase returns chase id of a Board, or nil.
+func (m *Module) Chase(id int) *Chase {
+	if i := slices.IndexFunc(m.Chases, func(c Chase) bool { return c.ID == id }); i >= 0 {
+		return &m.Chases[i]
+	}
+	return nil
+}
+
+// NextChase is an ID none of a Board's chases has: one past the highest.
+func (m *Module) NextChase() int {
+	n := 0
+	for _, c := range m.Chases {
+		n = max(n, c.ID)
+	}
+	return n + 1
+}
 
 // A Scene is a look a Board stored on one of its pads: its name, and
 // the value it holds for each channel, 0 to 255, by light ID, then by
@@ -535,6 +582,10 @@ func (s *Show) Clone() Show {
 		for j := range c.Modules[i].Scenes {
 			c.Modules[i].Scenes[j] = c.Modules[i].Scenes[j].Clone()
 		}
+		c.Modules[i].Chases = slices.Clone(c.Modules[i].Chases)
+		for j := range c.Modules[i].Chases {
+			c.Modules[i].Chases[j] = c.Modules[i].Chases[j].Clone()
+		}
 	}
 	c.Wires = slices.Clone(s.Wires)
 	c.Songs = slices.Clone(s.Songs)
@@ -584,6 +635,26 @@ func (s *Show) keepSceneLights() {
 	}
 }
 
+// mendChases takes the steps off the pads there are out of a Board's
+// chases, and a chase left with none out of it, and gives a chase with
+// no ID, or one an earlier chase has, an ID past every other.
+func (m *Module) mendChases() {
+	chases := m.Chases
+	next := m.NextChase()
+	m.Chases = nil
+	for _, c := range chases {
+		c.Steps = slices.DeleteFunc(slices.Clone(c.Steps), func(pad int) bool { return pad < 0 || pad >= Pads })
+		if len(c.Steps) == 0 {
+			continue
+		}
+		if c.ID < 1 || m.Chase(c.ID) != nil {
+			c.ID = next
+			next++
+		}
+		m.Chases = append(m.Chases, c)
+	}
+}
+
 // Load reads the show at path.
 func Load(path string) (Show, error) {
 	b, err := os.ReadFile(path)
@@ -617,8 +688,9 @@ func (s *Show) Save(path string) error {
 
 // Mend makes s whole, as one read from a file another build wrote: the
 // stage has a size, wires join modules that are there, scenes hold
-// lights that are there, each on a pad of its own, and every tab is in
-// the layout.
+// lights that are there, each on a pad of its own, chases step on the
+// pads there are, each with an ID of its own, and every tab is in the
+// layout.
 func (s *Show) Mend() {
 	if s.Stage.Width <= 0 || s.Stage.Depth <= 0 {
 		s.Stage.Width, s.Stage.Depth = 8, 5
@@ -634,6 +706,9 @@ func (s *Show) Mend() {
 					m.SetScene(c)
 				}
 			}
+		}
+		if m := &s.Modules[i]; len(m.Chases) > 0 {
+			m.mendChases()
 		}
 	}
 	s.keepSceneLights()

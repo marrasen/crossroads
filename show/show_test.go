@@ -4,6 +4,7 @@ import (
 	"math"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -157,5 +158,47 @@ func TestASceneWhoseLastLightIsRemovedLeavesItsPad(t *testing.T) {
 		if m.Kind == Board && (m.Scene(3) == nil || len(m.Scene(3).Values) != 1) {
 			t.Error("removing the light changed the show it was cloned from")
 		}
+	}
+}
+
+// TestABoardsChasesComeBackAsTheyWereSaved, and Mend keeps the steps on
+// the pads there are, an ID to each chase, and no chase of no steps; a
+// clone's chases are its own.
+func TestABoardsChasesComeBackAsTheyWereSaved(t *testing.T) {
+	s := Start()
+	var b *Module
+	for i := range s.Modules {
+		if s.Modules[i].Kind == Board {
+			b = &s.Modules[i]
+		}
+	}
+	b.Chases = []Chase{{ID: 2, Name: "Round", Steps: []int{0, 3, 3, 15}}, {ID: 5, Name: "Back", Steps: []int{1}}}
+	b.Speed, b.Fade, b.FollowBeat = 96, 0.4, true
+	path := filepath.Join(t.TempDir(), "Gig.crossroads")
+	if err := s.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	back, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back.Modules, s.Modules) {
+		t.Fatalf("the chases came back as %+v", back.Module(b.ID))
+	}
+	if b.NextChase() != 6 {
+		t.Errorf("the next chase is %d", b.NextChase())
+	}
+	c := back.Clone()
+	c.Module(b.ID).Chases[0].Steps[0] = 9
+	if back.Module(b.ID).Chases[0].Steps[0] != 0 {
+		t.Error("a clone's chase changed the show it was cloned from")
+	}
+	m := back.Module(b.ID)
+	m.Chases = append(m.Chases, Chase{ID: 2, Name: "Twin", Steps: []int{2}}, Chase{Name: "No ID", Steps: []int{-1, 4, Pads}},
+		Chase{ID: 7, Name: "Off the pads", Steps: []int{Pads}})
+	back.Mend()
+	got := back.Module(b.ID).Chases
+	if len(got) != 4 || got[2].Name != "Twin" || got[2].ID != 8 || got[3].ID != 9 || !slices.Equal(got[3].Steps, []int{4}) {
+		t.Errorf("mended, the chases are %+v", got)
 	}
 }

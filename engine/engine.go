@@ -332,11 +332,13 @@ type Engine struct {
 	// show's effect programmes, by ID.
 	effects  map[string]*fxRunner
 	programs map[string]fx.Program
-	// boards are each Board's lights picked, channels held and scenes
-	// playing, and recorded the scenes they recorded, for the
+	// boards are each Board's lights picked, channels held, scenes
+	// playing and chase running; recorded the scenes they recorded, and
+	// made the chases they made and the speeds tapped, for the
 	// application to keep.
 	boards   map[string]*board
 	recorded []Recorded
+	made     []Made
 	// audition is the pattern the editor plays while its test button
 	// is held, audLayer its light, and audBeats the beat it counts
 	// where the show has no Tempo.

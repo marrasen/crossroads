@@ -5,6 +5,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/marrasen/crossroads/show"
 	"github.com/marrasen/gunim-dmx/dmx"
@@ -32,6 +33,22 @@ type BoardState struct {
 	On     []int
 	Levels map[int]float64
 	Record bool
+	// Making says a chase is being made, and Steps are its steps so far,
+	// each a pad, from 0.
+	Making bool
+	Steps  []int
+	// Chase is the chase that runs, by ID, 0 for none; Step the step it
+	// is at, by its place in the chase's steps, from 0, -1 for none it
+	// can play; and Into how far it is into that step, 0 to 1. Last is
+	// the chase last run, 0 for none.
+	Chase, Step int
+	Into        float64
+	Last        int
+	// Clock is what the clock wired into the Board counts, nothing for
+	// none, and Following says the chase steps on its beats, as Follow
+	// the beat is on and the clock has a tempo.
+	Clock     Count
+	Following bool
 }
 
 // A Recorded is a scene a Board recorded, for the show to keep on
@@ -114,10 +131,32 @@ type board struct {
 	record bool
 	fades  map[int]*fade
 	kept   map[int]kept
+	// making says a chase is being made, and steps are its steps so far.
+	// chases are the chases made that the show does not hold yet, in
+	// the order they were made, which the board plays in place of the
+	// show's.
+	making bool
+	steps  []int
+	chases []keptChase
+	// run is the chase that runs, by ID, 0 for none, and last the chase
+	// last run. at is the step it is at, by its place in the chase's
+	// steps, -1 for none; from the pad of the step it fades from, -1 for
+	// none; and into how far it is into its step, in steps, below 0 just
+	// after a tap. beat is the beat its clock counted last, where heard
+	// says it counted one.
+	run, last int
+	at, from  int
+	into      float64
+	beat      int64
+	heard     bool
+	// taps are when the chase was last tapped, the latest last; speed a
+	// speed tapped that the show does not hold yet, 0 for none, and
+	// handed says the application has it.
+	taps   []time.Time
+	speed  float64
+	handed bool
 }
 
-// A fade is a scene of a Board as it plays: whether it is on, and how
-// far it has faded in, 0 to 1.
 // played is one channel of a scene that plays: its universe slot, from
 // 0, the value the scene holds for it, and the scene's level.
 type played struct {
@@ -126,6 +165,8 @@ type played struct {
 	level float64
 }
 
+// A fade is a scene of a Board as it plays: whether it is on, and how
+// far it has faded in, 0 to 1.
 type fade struct {
 	on    bool
 	level float64
@@ -200,11 +241,12 @@ func (e *Engine) ClearBoard(module string) {
 }
 
 // PressRecord has Board module wait for a pad to record onto, or, where
-// it waits, give up.
+// it waits, give up. While a chase is being made it does nothing: the
+// pads are the chase's.
 func (e *Engine) PressRecord(module string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if b := e.boards[module]; b != nil {
+	if b := e.boards[module]; b != nil && !b.making {
 		b.record = !b.record
 	}
 }
@@ -218,7 +260,8 @@ func (e *Engine) GiveUpRecord(module string) {
 	}
 }
 
-// PressPad presses pad of Board module, from 0: where Record waits, it
+// PressPad presses pad of Board module, from 0: while a chase is being
+// made, a pad with a scene is its next step; where Record waits, it
 // records onto the pad; otherwise it turns the pad's scene on, or off
 // where it is on, fading over the scene fade.
 func (e *Engine) PressPad(module string, pad int) {
@@ -238,6 +281,11 @@ func (e *Engine) padDown(module string, pad int) {
 		return
 	}
 	if _, ok := b.scene(m, pad); !ok {
+		return
+	}
+	if b.making {
+		// A new slice, as the last tick reported the one there was.
+		b.steps = append(slices.Clip(b.steps), pad)
 		return
 	}
 	at := fadeOf(m) == 0
@@ -396,8 +444,9 @@ func (e *Engine) scenesPlay(m *show.Module, b *board, cat fixtures.Catalog, f fu
 
 // keepBoards gives each Board of the show its state, kept by module
 // from the show before; lights gone from the rig, and channels gone
-// from their lights, drop out of it, and so do the scenes recorded that
-// the show now holds.
+// from their lights, drop out of it, and so do the scenes recorded, the
+// chases made and the speed tapped that the show now holds. A chase
+// deleted stops, and is the last run no more.
 func (e *Engine) keepBoards(cat fixtures.Catalog) {
 	keep := map[string]bool{}
 	for _, m := range e.s.Modules {
@@ -417,6 +466,7 @@ func (e *Engine) keepBoards(cat fixtures.Catalog) {
 			sc := m.Scene(pad)
 			return sc != nil && (k.handed || sameValues(sc.Values, k.scene.Values))
 		})
+		e.keepChases(&m, b)
 		if slices.ContainsFunc(b.picked, func(id string) bool { return e.s.Light(id) == nil }) {
 			b.picked = slices.DeleteFunc(slices.Clone(b.picked), func(id string) bool { return e.s.Light(id) == nil })
 		}
@@ -443,9 +493,10 @@ func sameValues(a, b map[string]map[int]byte) bool {
 
 // playBoard runs Board module m, dt seconds on from the last tick: its
 // layer holds each channel its faders hold, as it is, with no curve,
-// and under them the scenes that play, the higher where two set one
-// channel; a channel nothing sets is left out, so the mixer's home
-// value shows. The scenes fading go on fading.
+// and under them the scenes that play and the chase that runs, the
+// higher where two set one channel; a channel nothing sets is left out,
+// so the mixer's home value shows. The scenes fading go on fading, and
+// the chase steps on.
 func (e *Engine) playBoard(m *show.Module, cat fixtures.Catalog, dt float64, live *Live) {
 	l, b := e.layers[m.ID], e.boards[m.ID]
 	if l == nil || b == nil {
@@ -488,6 +539,12 @@ func (e *Engine) playBoard(m *show.Module, cat fixtures.Catalog, dt float64, liv
 		b.plays = append(b.plays, played{slot: slot - 1, v: v, level: level})
 		scenes[slot-1] = max(scenes[slot-1], uint16(e.atLevel(slot, v, level))+1)
 	})
+	// The chase that runs, beside them.
+	clock, _ := e.input(m.ID, "clock").(Count)
+	following := e.chaseOn(m, b, cat, dt, clock, func(slot int, v byte, level float64) {
+		b.plays = append(b.plays, played{slot: slot, v: v, level: level})
+		scenes[slot] = max(scenes[slot], uint16(e.atLevel(slot+1, v, level))+1)
+	})
 	b.any = b.any || len(b.plays) > 0
 	for i, v := range &scenes {
 		if v != 0 && b.over[i] == 0 {
@@ -495,7 +552,11 @@ func (e *Engine) playBoard(m *show.Module, cat fixtures.Catalog, dt float64, liv
 		}
 	}
 	e.values[portKey{m.ID, "out"}] = l
-	st := BoardState{Picked: b.picked, Held: b.held, Record: b.record}
+	st := BoardState{Picked: b.picked, Held: b.held, Record: b.record, Making: b.making, Steps: b.steps,
+		Chase: b.run, Step: -1, Last: b.last, Clock: clock, Following: following}
+	if b.run != 0 {
+		st.Step, st.Into = b.at, min(max(b.into, 0), 1)
+	}
 	for pad, f := range b.fades {
 		if st.Levels == nil {
 			st.Levels = map[int]float64{}
@@ -562,13 +623,16 @@ func (e *Engine) boardsOver(mixer string, master float64, u *dmx.Universe) {
 
 // Forget lets go of what a show does not keep, as another show takes
 // its place: what each Board has picked and holds, its scenes on and
-// those recorded, and whether Record waits; and the overrides held.
+// those recorded, and whether Record waits; the chase being made, those
+// made, the one that runs and the last run, and the taps; and the
+// overrides held.
 func (e *Engine) Forget() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	clear(e.boards)
 	clear(e.held)
 	e.recorded = nil
+	e.made = nil
 }
 
 // boardsPlay puts in each Board's state what the Mixer it is wired into
