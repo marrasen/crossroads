@@ -290,8 +290,8 @@ const (
 )
 
 // A Control is one control of a MIDI controller: its name, what kind it
-// is, and the MIDI it sends, a controller number or a note on Channel,
-// 0 to 15. Lit says the controller lights it from what is sent back to
+// is, and the MIDI it sends, a controller number, a note or a pitch
+// bend on Channel, 0 to 15. Lit says the controller lights it from what is sent back to
 // it: a knob's ring, a button's light.
 type Control struct {
 	ID      string      `json:"id"`
@@ -303,6 +303,9 @@ type Control struct {
 	CC   int  `json:"cc"`
 	Note int  `json:"note"`
 	Lit  bool `json:"lit,omitempty"`
+	// Bend says a slider sends a pitch bend, where it stands in the
+	// bend's second data byte, 0 to 127.
+	Bend bool `json:"bend,omitempty"`
 }
 
 // An Output is a DMX box a DMX out sends to.

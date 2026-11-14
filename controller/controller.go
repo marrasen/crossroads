@@ -5,9 +5,11 @@ package controller
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 
 	"github.com/marrasen/crossroads/show"
+	"github.com/marrasen/gunim/audio/midi"
 )
 
 // A Layout is a controller crossroads knows: its controls, as it sends
@@ -15,6 +17,11 @@ import (
 type Layout struct {
 	ID, Name string
 	Controls []show.Control
+	// Mackie says the controller runs in Mackie Control mode: it is
+	// sent [MackieHello] as it connects, its knobs turn as
+	// [MackieTicks] says, and its rings light as [Ring] and [RingCC]
+	// say.
+	Mackie bool
 }
 
 // XTouchMiniID is the X-Touch Mini's layout's ID.
@@ -42,31 +49,34 @@ func ControlsOf(m *show.Module) []show.Control {
 	return m.Controls
 }
 
-// xTouchMini is a Behringer X-Touch Mini in its standard mode, layer A,
-// on MIDI channel 11, its knobs set to send relative moves in the
-// X-Touch editor: knobs 1 to 8 move controllers 1 to 8 and light their
-// rings, pressed they play notes 0 to 7; its sixteen buttons play notes
-// 8 to 23 and light; its fader moves controller 9.
+// xTouchMini is a Behringer X-Touch Mini in Mackie Control mode, as
+// checked on the device: knobs 1 to 8 turn controllers 16 to 23 and
+// light rings 48 to 55, pressed they play notes 32 to 39; its sixteen
+// buttons and Layer A and B play their notes and light; its fader bends
+// the pitch on channel 9. All but the fader are on channel 1.
 func xTouchMini() Layout {
-	l := Layout{ID: XTouchMiniID, Name: "Behringer X-Touch Mini"}
-	const ch = 10
+	l := Layout{ID: XTouchMiniID, Name: "Behringer X-Touch Mini", Mackie: true}
 	for i := range 8 {
 		n := strconv.Itoa(i + 1)
-		l.Controls = append(l.Controls, show.Control{ID: "knob" + n, Name: "Knob " + n, Kind: show.Knob, Channel: ch, CC: i + 1, Note: -1, Lit: true})
+		l.Controls = append(l.Controls, show.Control{ID: "knob" + n, Name: "Knob " + n, Kind: show.Knob, CC: 16 + i, Note: -1, Lit: true})
 	}
 	for i := range 8 {
 		n := strconv.Itoa(i + 1)
-		l.Controls = append(l.Controls, show.Control{ID: "push" + n, Name: "Knob " + n + " pushed", Kind: show.Press, Channel: ch, CC: -1, Note: i})
+		l.Controls = append(l.Controls, show.Control{ID: "push" + n, Name: "Knob " + n + " pushed", Kind: show.Press, CC: -1, Note: 32 + i})
 	}
-	for i := range 16 {
+	notes := []int{89, 90, 40, 41, 42, 43, 44, 45, 87, 88, 91, 92, 86, 93, 94, 95}
+	for i, note := range notes {
 		row, col := "top", i+1
 		if i >= 8 {
 			row, col = "bottom", i-7
 		}
 		l.Controls = append(l.Controls, show.Control{ID: fmt.Sprintf("button%d", i+1), Name: fmt.Sprintf("Button %s %d", row, col),
-			Kind: show.Press, Channel: ch, CC: -1, Note: 8 + i, Lit: true})
+			Kind: show.Press, CC: -1, Note: note, Lit: true})
 	}
-	l.Controls = append(l.Controls, show.Control{ID: "fader", Name: "Fader", Kind: show.Slider, Channel: ch, CC: 9, Note: -1})
+	l.Controls = append(l.Controls,
+		show.Control{ID: "layerA", Name: "Layer A", Kind: show.Press, CC: -1, Note: 84, Lit: true},
+		show.Control{ID: "layerB", Name: "Layer B", Kind: show.Press, CC: -1, Note: 85, Lit: true},
+		show.Control{ID: "fader", Name: "Fader", Kind: show.Slider, Channel: 8, CC: -1, Note: -1, Bend: true})
 	return l
 }
 
@@ -81,6 +91,66 @@ func Ticks(v byte) int {
 		return int(v)
 	}
 	return int(v) - 128
+}
+
+// MackieTicks is how far a knob in Mackie Control mode turned, in
+// steps, from the value it sent: 1 to 63 up, 65 to 127 down, the steps
+// being the value less 64. This is not two's complement: 65 is one step
+// down.
+func MackieTicks(v byte) int {
+	switch {
+	case v == 0 || v == 64:
+		return 0
+	case v < 64:
+		return int(v)
+	}
+	return 64 - int(v)
+}
+
+// MackieHello is what a controller in Mackie Control mode is sent as it
+// connects, before its lights: the switch to Mackie Control mode, CC
+// 127 at 1, on all 16 channels. The X-Touch Mini takes it on its global
+// channel, which its editor can change, and ignores it on the others.
+func MackieHello() []midi.Message {
+	out := make([]midi.Message, 16)
+	for ch := range out {
+		out[ch] = midi.Control(ch, 127, 1)
+	}
+	return out
+}
+
+// The button lights in Mackie Control mode: a note on, the button's own
+// note, at one of these velocities.
+const (
+	LightOff   = 0
+	LightOn    = 127
+	LightBlink = 1
+)
+
+// ringFan is what a ring in Mackie Control mode adds to its position to
+// fill from the left.
+const ringFan = 32
+
+// Ring is what a knob's ring in Mackie Control mode is sent for value
+// v, 0 to 1: dark at 0, and otherwise lit from the left, 1 to 11 of its
+// LEDs.
+func Ring(v float64) int {
+	if v <= 0 {
+		return ringFan
+	}
+	return ringFan + min(max(int(math.Round(v*11)), 1), 11)
+}
+
+// RingCC is the controller number that lights the ring of a knob in
+// Mackie Control mode that turns controller cc: 48 to 55 for knobs 16
+// to 23.
+func RingCC(cc int) int { return cc + 32 }
+
+// IsStandard reports whether a message of kind on channel ch for number
+// is an X-Touch Mini's knob in its Standard mode, not Mackie Control
+// mode: CC 1 to 8 on channel 11.
+func IsStandard(kind midi.Kind, ch, number int) bool {
+	return kind == midi.KindControl && ch == 10 && number >= 1 && number <= 8
 }
 
 // Learned is the control a controller learns from a message: a button

@@ -50,11 +50,12 @@ from its beats, and triggers as each song starts and ends and on each
 bar; triggers in, as from a **Button**, play, stop, skip and go back.
 
 A **Controller** module is a MIDI controller. A Behringer X-Touch Mini
-is built in: set its knobs to relative in the X-Touch editor, and its
-rings and button lights follow what crossroads plays. Any other
-controller learns its controls: press Learn a control on the
-**Controllers** tab, then move one. A fader takes over its value only
-once it passes it. **Map** scales a value, **Every** fires every so
+is built in, in its Mackie Control (MC) mode: crossroads switches it
+to MC mode as it connects, and its rings and button lights follow what
+crossroads plays. If it stays in Standard mode, the **Controllers**
+tab says so: hold MC while plugging it in. Any other controller learns
+its controls: press Learn a control on the **Controllers** tab, then
+move one. A fader takes over its value only once it passes it. **Map** scales a value, **Every** fires every so
 many beats, **Toggle** turns on and off, and **MIDI out** sends notes
 and controller moves.
 

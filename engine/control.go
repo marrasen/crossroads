@@ -53,8 +53,9 @@ func (systemMIDI) OpenOut(name string) (MIDIOut, error) {
 
 // A desk is a Controller's state: its port, each knob's and slider's
 // value, which sliders have taken over their value, the buttons held,
-// what its lights were last sent, the channel it was last heard on, and
-// whether it learns its next control.
+// what its lights were last sent, whether it was heard in Standard mode
+// where it wants Mackie Control mode, and whether it learns its next
+// control.
 type desk struct {
 	device string
 	values map[string]float64
@@ -64,19 +65,24 @@ type desk struct {
 	held   map[string]bool
 	fired  map[string]bool
 	sent   map[string]int
-	ch     int
-	learn  bool
-	last   string
-	events []midi.Event
+	// standard says a knob was heard in Standard mode since the switch
+	// to Mackie Control mode was last sent.
+	standard bool
+	learn    bool
+	last     string
+	events   []midi.Event
 }
 
 // A Desk is what a Controller shows: what its port says, each
-// control's value, the last message heard, and whether it learns.
+// control's value, the last message heard, whether it learns, and
+// whether it is in Standard mode where its layout wants Mackie Control
+// mode.
 type Desk struct {
-	Says   string
-	Values map[string]float64
-	Last   string
-	Learn  bool
+	Says     string
+	Values   map[string]float64
+	Last     string
+	Learn    bool
+	Standard bool
 }
 
 // Learnt is a control a Controller learned from what it heard.
@@ -109,7 +115,21 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 		clear(d.caught)
 	}
 	controls := controller.ControlsOf(m)
-	_, built := controller.Find(m.Layout)
+	l, _ := controller.Find(m.Layout)
+	ticks := controller.Ticks
+	if l.Mackie {
+		ticks = controller.MackieTicks
+	}
+	if fresh {
+		clear(d.sent)
+		if l.Mackie && out != nil {
+			// The switch to Mackie Control mode, before every light.
+			d.standard = false
+			for _, msg := range controller.MackieHello() {
+				_ = out.Send(time.Time{}, msg)
+			}
+		}
+	}
 	for _, ev := range d.events {
 		kind, ch := ev.Kind(), ev.Channel()
 		var number, value int
@@ -120,13 +140,19 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 			number, value = ev.Key(), ev.Velocity()
 		case midi.KindNoteOff:
 			number, value = ev.Key(), 0
+		case midi.KindBend:
+			// Where it stands is the second data byte, as a 7-bit fader
+			// sends it.
+			value = int(ev.Data2)
 		default:
 			continue
 		}
-		d.ch = ch
 		d.last = ev.String()
 		e.note(now, m.Name+": "+d.last)
-		c := find(controls, built, kind, ch, number)
+		if l.Mackie && controller.IsStandard(kind, ch, number) {
+			d.standard = true
+		}
+		c := find(controls, kind, ch, number)
 		if c == nil {
 			if d.learn && value > 0 {
 				id := fmt.Sprintf("c%d", len(m.Controls)+len(e.learnt)+1)
@@ -139,7 +165,7 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 		}
 		switch c.Kind {
 		case show.Knob:
-			d.values[c.ID] = min(max(d.values[c.ID]+float64(controller.Ticks(byte(value)))*knobStep, 0), 1)
+			d.values[c.ID] = min(max(d.values[c.ID]+float64(ticks(byte(value)))*knobStep, 0), 1)
 		case show.Slider:
 			at := float64(value) / 127
 			if was, ok := d.values[c.ID]; ok && !d.caught[c.ID] {
@@ -174,44 +200,42 @@ func (e *Engine) control(m *show.Module, now time.Time, live *Live) {
 			}
 		}
 	}
-	if fresh {
-		clear(d.sent)
-	}
 	if out != nil {
-		e.light(m, d, controls, out, built)
+		e.light(m, d, controls, out, l.Mackie)
 	}
-	live.Desks[m.ID] = Desk{Says: e.hub.says(m.Device, true), Values: values, Last: d.last, Learn: d.learn}
+	live.Desks[m.ID] = Desk{Says: e.hub.says(m.Device, true), Values: values, Last: d.last, Learn: d.learn, Standard: d.standard}
 }
 
 // light sends the controller's lights what they show, where it
-// changed, built saying m has a built-in layout: a knob's ring its value, a button's light what is wired into
-// it, or, with nothing wired, whether it is held.
-func (e *Engine) light(m *show.Module, d *desk, controls []show.Control, out MIDIOut, built bool) {
+// changed, each on its control's own channel: a knob's ring its value,
+// a button's light what is wired into it, or, with nothing wired,
+// whether it is held. mackie says the controller is in Mackie Control
+// mode, whose rings fill from the left.
+func (e *Engine) light(m *show.Module, d *desk, controls []show.Control, out MIDIOut, mackie bool) {
 	for _, c := range controls {
 		if !c.Lit {
 			continue
-		}
-		// A built-in layout's lights go out on the channel the
-		// controller was heard on, as it may be set to another.
-		ch := c.Channel
-		if built && d.ch >= 0 {
-			ch = d.ch
 		}
 		var v int
 		var msg midi.Message
 		switch c.Kind {
 		case show.Knob, show.Slider:
 			v = int(math.Round(d.values[c.ID] * 127))
-			msg = midi.Control(ch, c.CC, v)
+			msg = midi.Control(c.Channel, c.CC, v)
+			if mackie {
+				v = controller.Ring(d.values[c.ID])
+				msg = midi.Control(c.Channel, controller.RingCC(c.CC), v)
+			}
 		case show.Press:
 			lit := d.held[c.ID]
 			if in, ok := e.input(m.ID, lightPrefix+c.ID).(float64); ok {
 				lit = in >= 0.5
 			}
+			v = controller.LightOff
 			if lit {
-				v = 127
+				v = controller.LightOn
 			}
-			msg = midi.NoteOn(ch, c.Note, v)
+			msg = midi.NoteOn(c.Channel, c.Note, v)
 		}
 		if was, ok := d.sent[c.ID]; ok && was == v {
 			continue
@@ -223,16 +247,15 @@ func (e *Engine) light(m *show.Module, d *desk, controls []show.Control, out MID
 }
 
 // find is the control of controls that sends a message of kind on
-// channel ch for number, nil for none: on any channel, where anyCh
-// says, as a built-in layout's channel can be set on the controller.
-func find(controls []show.Control, anyCh bool, kind midi.Kind, ch, number int) *show.Control {
+// channel ch for number, nil for none.
+func find(controls []show.Control, kind midi.Kind, ch, number int) *show.Control {
 	note := kind == midi.KindNoteOn || kind == midi.KindNoteOff
 	for i := range controls {
 		c := &controls[i]
-		if !anyCh && c.Channel != ch {
+		if c.Channel != ch {
 			continue
 		}
-		if kind == midi.KindControl && c.CC == number || note && c.Note == number {
+		if kind == midi.KindBend && c.Bend || kind == midi.KindControl && c.CC == number || note && c.Note == number {
 			return c
 		}
 	}

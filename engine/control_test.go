@@ -2,6 +2,8 @@ package engine
 
 import (
 	"errors"
+	"math"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -12,26 +14,34 @@ import (
 )
 
 // fakeMIDI is a MIDI device a test plays: what it sends comes in, and
-// what is sent to it is kept.
+// what is sent to it is kept. plugs counts its unplugs: a port opened
+// before the last is gone.
 type fakeMIDI struct {
-	mu    sync.Mutex
-	f     func(midi.Event)
-	sent  []midi.Message
-	opens int
-	down  bool
-	gone  error
+	mu       sync.Mutex
+	f        func(midi.Event)
+	sent     []midi.Message
+	opens    int
+	outOpens int
+	down     bool
+	plugs    int
 }
 
-type fakeIn struct{ d *fakeMIDI }
+type fakeIn struct {
+	d    *fakeMIDI
+	plug int
+}
 
 func (i fakeIn) Err() error {
 	i.d.mu.Lock()
 	defer i.d.mu.Unlock()
-	return i.d.gone
+	if i.plug != i.d.plugs {
+		return midi.ErrGone
+	}
+	return nil
 }
 func (fakeIn) Close() error { return nil }
 
-type fakeOut struct{ d *fakeMIDI }
+type fakeOut fakeIn
 
 func (o fakeOut) Send(_ time.Time, m midi.Message) error {
 	o.d.mu.Lock()
@@ -48,12 +58,17 @@ func (d *fakeMIDI) OpenIn(_ string, f func(midi.Event)) (MIDIIn, error) {
 	if d.down {
 		return nil, errors.New("not plugged in")
 	}
-	d.f, d.gone = f, nil
+	d.f = f
 	d.opens++
-	return fakeIn{d}, nil
+	return fakeIn{d, d.plugs}, nil
 }
 
-func (d *fakeMIDI) OpenOut(string) (MIDIOut, error) { return fakeOut{d}, nil }
+func (d *fakeMIDI) OpenOut(string) (MIDIOut, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.outOpens++
+	return fakeOut{d, d.plugs}, nil
+}
 
 // play sends m from the device.
 func (d *fakeMIDI) play(m midi.Message) {
@@ -109,39 +124,54 @@ func (r *midiRig) tick() Live {
 	return r.e.Tick()
 }
 
-// TestAKnobTurnsItsValueAndLightsItsRing: relative steps move it, it
-// stays within 0 and 1, and its ring is sent where it is.
-func TestAKnobTurnsItsValueAndLightsItsRing(t *testing.T) {
+// TestAKnobTurnedEitherWayMovesItsValueAndRing: in Mackie Control
+// mode, 1 to 7 up and 65 to 71 down, each step a hundredth times the
+// speed, within 0 and 1; its ring dark at 0, one LED for a little, all
+// 11 at full.
+func TestAKnobTurnedEitherWayMovesItsValueAndRing(t *testing.T) {
 	r := newMIDIRig(t)
 	r.tick()
 	r.d.took()
-	for range 3 {
-		r.d.play(midi.Control(10, 1, 5))
+	turn := func(v, times int, want float64, what string) {
+		t.Helper()
+		for range times {
+			r.d.play(midi.Control(0, 16, v))
+		}
+		got := r.tick().Desks[r.ctl].Values["knob1"]
+		if math.Abs(got-want) > 1e-9 {
+			t.Errorf("%s, knob 1 is at %v, want %v", what, got, want)
+		}
 	}
-	live := r.tick()
-	if v := live.Desks[r.ctl].Values["knob1"]; v < 0.149 || v > 0.151 {
-		t.Errorf("three turns of five steps put knob 1 at %v, want 0.15", v)
+	ring := func(want int, what string) {
+		t.Helper()
+		if sent := r.d.took(); !sameBytes(sent, []midi.Message{midi.Control(0, 48, want)}) {
+			t.Errorf("%s, ring 1 was sent %v, want %d", what, sent, want)
+		}
 	}
-	if v, _ := r.e.values[portKey{r.ctl, "knob1"}].(float64); v < 0.149 {
+	turn(1, 1, 0.01, "turned up one step")
+	ring(33, "a little up")
+	turn(5, 3, 0.16, "turned up three times at speed 5")
+	if v, _ := r.e.values[portKey{r.ctl, "knob1"}].(float64); math.Abs(v-0.16) > 1e-9 {
 		t.Errorf("knob 1's output carries %v", v)
 	}
-	sent := r.d.took()
-	if len(sent) != 1 || !same(sent[0], midi.Control(10, 1, 19)) {
-		t.Errorf("knob 1's ring was sent %v, want one move to 19", sent)
-	}
-	r.d.play(midi.Control(10, 1, 100)) // 28 steps down
-	if v := r.tick().Desks[r.ctl].Values["knob1"]; v != 0 {
-		t.Errorf("turned down past its end, knob 1 is at %v", v)
-	}
+	r.d.took()
+	turn(65, 1, 0.15, "turned down one step")
+	turn(70, 1, 0.09, "turned down at speed 6")
+	r.d.took()
+	turn(71, 3, 0, "turned down past its end")
+	ring(32, "at 0")
+	turn(7, 20, 1, "turned up past its end")
+	ring(43, "full")
 }
 
 // TestAButtonFlipsAToggleThatLightsIt: pressed, it fires once, the
-// Toggle turns on, and its light is sent on; pressed again, off.
+// Toggle turns on, and its light is sent on, a note on of its own note
+// at 127; pressed again, off at 0.
 func TestAButtonFlipsAToggleThatLightsIt(t *testing.T) {
 	r := newMIDIRig(t)
 	r.tick()
 	r.d.took()
-	r.d.play(midi.NoteOn(10, 8, 127))
+	r.d.play(midi.NoteOn(0, 89, 127))
 	live := r.tick()
 	if live.Values[r.toggle] != 1 {
 		t.Fatalf("pressed, the toggle is at %v", live.Values[r.toggle])
@@ -149,24 +179,144 @@ func TestAButtonFlipsAToggleThatLightsIt(t *testing.T) {
 	// The toggle runs after the controller, so its light goes out at
 	// the next tick.
 	r.tick()
-	if sent := r.d.took(); !contains(sent, midi.NoteOn(10, 8, 127)) {
+	if sent := r.d.took(); !slices.ContainsFunc(sent, sameAs(midi.NoteOn(0, 89, 127))) {
 		t.Errorf("the button's light was sent %v", sent)
 	}
-	r.d.play(midi.NoteOn(10, 8, 0))
+	r.d.play(midi.NoteOn(0, 89, 0))
 	r.tick()
 	if r.tick().Values[r.toggle] != 1 {
 		t.Error("let go, the button flipped the toggle again")
 	}
-	r.d.play(midi.NoteOn(10, 8, 127))
+	r.d.play(midi.NoteOn(0, 89, 127))
 	r.tick()
 	r.tick()
-	if sent := r.d.took(); !contains(sent, midi.NoteOn(10, 8, 0)) {
+	if sent := r.d.took(); !slices.ContainsFunc(sent, sameAs(midi.NoteOn(0, 89, 0))) {
 		t.Errorf("pressed again, the button's light was sent %v", sent)
+	}
+}
+
+// fader is the X-Touch Mini's fader at v, 0 to 127: a pitch bend on
+// channel 9, the first data byte 0.
+func fader(v byte) midi.Message { return midi.Message{Status: 0xE8, Data2: v} }
+
+// replug unplugs the rig's controller and plugs it in again, and waits
+// until its input and output have opened again.
+func (r *midiRig) replug(t *testing.T) {
+	t.Helper()
+	r.d.mu.Lock()
+	r.d.plugs++
+	ins, outs := r.d.opens, r.d.outOpens
+	r.d.mu.Unlock()
+	r.now = r.now.Add(3 * time.Second)
+	for range 2000 {
+		r.tick()
+		r.d.mu.Lock()
+		reopened := r.d.opens > ins && r.d.outOpens > outs
+		r.d.mu.Unlock()
+		busy := false
+		for _, p := range []*port{r.e.hub.ins["X-TOUCH MINI"], r.e.hub.outs["X-TOUCH MINI"]} {
+			p.mu.Lock()
+			busy = busy || p.busy
+			p.mu.Unlock()
+		}
+		if reopened && !busy {
+			r.tick()
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("the controller never opened again")
+}
+
+// TestTheXTouchMiniIsSwitchedToMCModeThenLitOnEveryConnect: CC 127 at
+// 1 on all 16 channels, then every ring and button light, as it first
+// connects and again as it comes back.
+func TestTheXTouchMiniIsSwitchedToMCModeThenLitOnEveryConnect(t *testing.T) {
+	r := newMIDIRig(t)
+	want := func(ring1 int) []midi.Message {
+		var w []midi.Message
+		for ch := range 16 {
+			w = append(w, midi.Message{Status: byte(0xB0 + ch), Data1: 127, Data2: 1})
+		}
+		w = append(w, midi.Control(0, 48, ring1))
+		for cc := 49; cc <= 55; cc++ {
+			w = append(w, midi.Control(0, cc, 32))
+		}
+		for _, n := range []int{89, 90, 40, 41, 42, 43, 44, 45, 87, 88, 91, 92, 86, 93, 94, 95, 84, 85} {
+			w = append(w, midi.NoteOn(0, n, 0))
+		}
+		return w
+	}
+	r.tick()
+	if sent := r.d.took(); !sameBytes(sent, want(32)) {
+		t.Errorf("connected, the X-Touch Mini was sent\n%v\nwant\n%v", sent, want(32))
+	}
+	r.d.play(midi.Control(0, 16, 7))
+	r.tick()
+	r.d.took()
+	r.replug(t)
+	if sent := r.d.took(); !sameBytes(sent, want(33)) {
+		t.Errorf("back again, the X-Touch Mini was sent\n%v\nwant\n%v", sent, want(33))
+	}
+
+	// A controller of learned controls is sent no switch.
+	d := &fakeMIDI{}
+	var s show.Show
+	ctl := s.NewID("m")
+	s.Modules = []show.Module{{ID: ctl, Kind: show.Controller, Device: "nanoKONTROL",
+		Controls: []show.Control{{ID: "c1", Name: "Note 36", Kind: show.Press, CC: -1, Note: 36, Lit: true}}}}
+	e := New(nil)
+	e.MIDI = d
+	defer e.Close()
+	e.Set(s)
+	waitPorts(t, e)
+	e.Tick()
+	if sent := d.took(); !sameBytes(sent, []midi.Message{midi.NoteOn(0, 36, 0)}) {
+		t.Errorf("a controller of learned controls was sent %v", sent)
+	}
+}
+
+// TestAnXTouchMiniInStandardModeSaysItWantsMCMode: a knob heard as CC
+// 1 to 8 on channel 11 means the switch did not reach it, until it
+// comes back and is switched again.
+func TestAnXTouchMiniInStandardModeSaysItWantsMCMode(t *testing.T) {
+	r := newMIDIRig(t)
+	r.d.play(midi.Control(0, 16, 1))
+	if r.tick().Desks[r.ctl].Standard {
+		t.Error("in MC mode, the X-Touch Mini says it is in Standard mode")
+	}
+	r.d.play(midi.Control(10, 3, 64))
+	if !r.tick().Desks[r.ctl].Standard {
+		t.Error("a Standard mode knob heard, the X-Touch Mini does not say so")
+	}
+	r.replug(t)
+	if r.tick().Desks[r.ctl].Standard {
+		t.Error("back again and switched, it still says it is in Standard mode")
 	}
 }
 
 // same reports whether two messages without sysex are the same.
 func same(a, b midi.Message) bool { return a.String() == b.String() }
+
+// sameAs says whether a message without sysex is m, byte for byte: a
+// note on at 0 is not a note off.
+func sameAs(m midi.Message) func(midi.Message) bool {
+	return func(x midi.Message) bool { return x.Status == m.Status && x.Data1 == m.Data1 && x.Data2 == m.Data2 }
+}
+
+// sameBytes reports whether two lists of messages without sysex are the
+// same bytes.
+func sameBytes(a, b []midi.Message) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !sameAs(b[i])(a[i]) {
+			return false
+		}
+	}
+	return true
+}
 
 func contains(ms []midi.Message, m midi.Message) bool {
 	for _, x := range ms {
@@ -177,43 +327,23 @@ func contains(ms []midi.Message, m midi.Message) bool {
 	return false
 }
 
-// TestTheFaderTakesOverOnlyOnceItPassesItsValue: after the controller
-// comes back, the fader does nothing until it passes where its value
-// stands.
+// TestTheFaderTakesOverOnlyOnceItPassesItsValue: it sends a pitch
+// bend, its value in the second data byte; after the controller comes
+// back, the fader does nothing until it passes where its value stands.
 func TestTheFaderTakesOverOnlyOnceItPassesItsValue(t *testing.T) {
 	r := newMIDIRig(t)
-	r.d.play(midi.Control(10, 9, 100))
+	r.d.play(fader(100))
 	if v := r.tick().Desks[r.ctl].Values["fader"]; v < 0.78 || v > 0.79 {
 		t.Fatalf("the fader first moved to 100 is at %v", v)
 	}
 	// Unplugged and plugged in again, the fader moved meanwhile.
-	r.d.mu.Lock()
-	r.d.gone = midi.ErrGone
-	r.d.mu.Unlock()
-	r.now = r.now.Add(3 * time.Second)
-	r.tick()
-	// Wait for it to open again, wholly.
-	p := r.e.hub.ins["X-TOUCH MINI"]
-	for range 2000 {
-		r.tick()
-		r.d.mu.Lock()
-		n := r.d.opens
-		r.d.mu.Unlock()
-		p.mu.Lock()
-		busy := p.busy
-		p.mu.Unlock()
-		if n >= 2 && !busy {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	r.tick()
-	r.d.play(midi.Control(10, 9, 20))
-	r.d.play(midi.Control(10, 9, 40))
+	r.replug(t)
+	r.d.play(fader(20))
+	r.d.play(fader(40))
 	if v := r.tick().Desks[r.ctl].Values["fader"]; v < 0.78 {
 		t.Errorf("below where it stood, the fader moved the value to %v", v)
 	}
-	r.d.play(midi.Control(10, 9, 110))
+	r.d.play(fader(110))
 	if v := r.tick().Desks[r.ctl].Values["fader"]; v < 0.86 || v > 0.87 {
 		t.Errorf("past where it stood, the fader is at %v, want 110/127", v)
 	}
